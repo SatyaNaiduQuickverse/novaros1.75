@@ -219,7 +219,11 @@ class Session:
         return self.fc
 
     def _fc_poll(self):
-        """~10 Hz attitude, well inside the MSP budget. Never raises."""
+        """20 Hz attitude, still well inside the ~62 txn/s budget. Never raises.
+
+        Was 10 Hz, which put up to 100 ms of staleness into every comparison —
+        enough to fabricate 15+ deg of disagreement during a brisk tilt.
+        """
         while not self._stop.is_set():
             try:
                 att = self.fc.attitude()
@@ -231,7 +235,7 @@ class Session:
             except Exception:
                 with self.lock:
                     self.fc_att = self.fc_grav = self.fc_spec = None
-            time.sleep(0.1)
+            time.sleep(0.05)
 
     def _fc_gravity(self):
         """Cached airframe DOWN direction, or None if stale/absent."""
@@ -425,14 +429,22 @@ class Session:
             with self.lock:
                 if self.mode == "idle":
                     return
-            att = self.fc_att
-            q, _, _ = self.imu.get_state()
+            with self.lock:
+                att, at = self.fc_att, self.fc_at
+            q, w, _ = self.imu.get_state()
             from companion.math_utils import q_to_euler
             rpy = q_to_euler(q)
             if att is not None:
+                # The gyro is the honest rate. Differencing the FC's attitude
+                # is not: it is cached, so repeats of one value difference to
+                # zero and a fast swing looks stationary — which is exactly how
+                # the worst samples were slipping through as "slow".
+                dps = float(np.degrees(np.linalg.norm(w)))
+                age = time.monotonic() - at
                 with self.lock:
                     self.track.append((time.monotonic(), float(rpy[0]),
-                                       float(rpy[1]), att["roll"], att["pitch"]))
+                                       float(rpy[1]), att["roll"], att["pitch"],
+                                       dps, age))
             time.sleep(0.05)
         self._finish()
 
@@ -499,23 +511,24 @@ class Session:
     # 150 deg/s that alone manufactures 15 deg of apparent disagreement with
     # nothing wrong. Measured: a sweep with mean agreement of 2.3 deg peaked at
     # 15.8 deg purely on the fast segments.
-    TRACK_SLOW_DPS = 40.0
+    TRACK_SLOW_DPS = 20.0
+    TRACK_MAX_AGE_S = 0.12
 
     def _fit_track(self, rows):
         if len(rows) < 60:
             raise RuntimeError(f"only {len(rows)} samples — is the FC connected?")
         a = np.array(rows, float)
-        t, esp, fc = a[:, 0], a[:, 1:3], a[:, 3:5]
+        esp, fc, dps, age = a[:, 1:3], a[:, 3:5], a[:, 5], a[:, 6]
         d = esp - fc
         moved = float(max(fc[:, 0].max() - fc[:, 0].min(),
                           fc[:, 1].max() - fc[:, 1].min()))
         if moved < 25:
             raise RuntimeError(f"the airframe only moved {moved:.0f} deg — tilt "
                                "it properly, agreeing at rest proves nothing")
-        # Angular rate straight from the reference, no extra sensor needed.
-        dt = np.diff(t, prepend=t[0] - 0.05)
-        rate = np.abs(np.diff(fc, axis=0, prepend=fc[:1])).sum(axis=1) / np.maximum(dt, 1e-3)
-        slow = rate < self.TRACK_SLOW_DPS
+        # Judge only where the comparison is meaningful: the airframe nearly
+        # still AND the reference freshly read. Either alone is not enough —
+        # a stale reference against a moved airframe reads as disagreement.
+        slow = (dps < self.TRACK_SLOW_DPS) & (age < self.TRACK_MAX_AGE_S)
         if slow.sum() < 40:
             raise RuntimeError("almost every sample was taken mid-swing — move "
                                "more slowly, or pause briefly at each angle")
@@ -530,7 +543,8 @@ class Session:
             "worst_roll": round(float(np.max(np.abs(ds[:, 0]))), 2),
             "worst_pitch": round(float(np.max(np.abs(ds[:, 1]))), 2),
             "worst_any_rate": round(float(np.max(np.abs(d))), 2),
-            "peak_rate_dps": round(float(rate.max()), 0),
+            "peak_rate_dps": round(float(dps.max()), 0),
+            "worst_ref_age_ms": round(float(age.max() * 1000), 0),
             "good": bool(np.max(np.abs(ds)) < 8),
         }
 
