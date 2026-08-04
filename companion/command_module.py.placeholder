@@ -1,0 +1,100 @@
+"""The per-tick command producer — PLACEHOLDER.
+
+Each tick it reads vehicle state and the object bearing, then emits a stick
+command. This implementation emits a SAFE IDLE command (sticks centred,
+throttle at the floor) so the whole read -> decide -> command path can be
+exercised, logged and timed with the vehicle doing nothing.
+
+Replace this file when the plumbing is green. The replacement is constructed
+the same way (``fc, imu, vision``) and called the same way (``.step(t)``);
+nothing else in the stack changes.
+
+Contract for whatever replaces it:
+  * ``engage()`` is called once, at the moment the companion takes control. It
+    starts the phase clock.
+  * ``step(t)`` returns the stick dict it commanded and must not block — it
+    runs inside the control loop at ``fc.cfg.fc.rc_hz``.
+  * ``t`` is **seconds since engage()**, from ``time.monotonic()``. It starts
+    at ~0. A module with time-based phases (boost, terminal) sequences off it,
+    so handing it any other epoch mis-sequences the guidance silently — see
+    docs/COMMAND_MODULE_INTERFACE.md.
+  * Never write aux channels. ARM belongs to the pilot.
+  * Clamping is not your job: :func:`companion.safety.aetr_frame` enforces the
+    envelope on every frame regardless of what you ask for.
+"""
+
+from __future__ import annotations
+
+import logging
+
+from .safety import IDLE_STICKS
+
+log = logging.getLogger("companion.command")
+
+
+class CommandModule:
+    name = "idle-placeholder"
+
+    def __init__(self, fc, imu, vision, logger=None):
+        self.fc = fc
+        self.imu = imu
+        self.vision = vision
+        self.log = logger
+        self.ticks = 0
+        self.engaged = False
+        self._last_t = None
+        self._max_dt = 0.0
+        self._epoch_warned = False
+
+    def engage(self) -> None:
+        """Companion has taken control; the phase clock starts now."""
+        self.engaged = True
+        self.ticks = 0
+        self._last_t = None
+        if self.log:
+            self.log.event("engage", module=self.name)
+
+    def _check_epoch(self, t) -> None:
+        """A module sequencing off t must be handed t≈0 at engage.
+
+        Being given an absolute clock, or seconds-since-process-start, would
+        put a phased guidance module straight into a late phase on its first
+        tick. Cheap to check, expensive to miss.
+        """
+        if self._epoch_warned:
+            return
+        if self._last_t is None and t > 1.0:
+            log.warning("first step() t=%.1fs, expected ~0 — t must be seconds "
+                        "since engage(), not an absolute clock", t)
+            self._epoch_warned = True
+        elif self._last_t is not None and t < self._last_t:
+            log.warning("step() t went backwards (%.3f -> %.3f)", self._last_t, t)
+            self._epoch_warned = True
+
+    def step(self, t) -> dict:
+        self._check_epoch(t)
+        q, w, acc = self.imu.get_state()
+        b = self.vision.bearing(t)
+
+        sticks = dict(IDLE_STICKS)
+        self.fc.set_stick(**sticks)
+
+        if self._last_t is not None:
+            self._max_dt = max(self._max_dt, t - self._last_t)
+        self._last_t = t
+        self.ticks += 1
+
+        if self.log:
+            self.log.log(
+                q=q, w=w, acc=acc,
+                bearing=(b.u_world if b else None),
+                conf=(b.conf if b else None),
+                rng=(b.range_m if b else None),
+                sticks=[sticks["roll"], sticks["pitch"], sticks["yaw"], sticks["throttle"]],
+                mode=self.name,
+                abort=getattr(self.fc, "abort_reason", None),
+            )
+        return sticks
+
+    def stats(self) -> dict:
+        return {"ticks": self.ticks, "worst_tick_gap_ms": round(self._max_dt * 1000, 2)}

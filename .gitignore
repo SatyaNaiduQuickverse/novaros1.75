@@ -1,0 +1,23 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.jsonl
+logs/
+.pytest_cache/
+*.log
+
+# Keep the committed vehicle config, ignore per-session copies.
+config/*.local.yaml
+
+# Toolchain venv for the ESP32 (esptool/mpremote) — 23 MB, rebuildable from
+# docs/SETUP_HARDWARE.md in one command.
+.venv-esp/
+
+# Per-machine tool permissions, not project state.
+.claude/settings.local.json
+
+# NOT ignored, deliberately:
+#   companion/command_module.*.so — the delivered binary. config/vehicle.yaml
+#   pins its SHA-256 and verifies it at load, so the pin only means something
+#   if the artifact it names is in the tree. See docs/COMMAND_MODULE_INTERFACE.md.

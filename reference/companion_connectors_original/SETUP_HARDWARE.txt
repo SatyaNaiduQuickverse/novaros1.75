@@ -1,0 +1,98 @@
+================================================================================
+ HARDWARE INTEGRATION KIT — bring up all the plumbing FIRST
+================================================================================
+
+This kit is the connector layer: the code that talks to the flight controller, the
+IMU, the camera/tracker, and the logger. Wire the vehicle, bring up and VERIFY every
+I/O path with the bench harness, then add your operational module (one file) at the
+end. The entire hardware bring-up is done without it.
+
+What this stack does: a companion computer reads vehicle state and an object bearing
+from a camera/tracker and streams stick commands to a Betaflight flight controller
+over MSP. Rate (ACRO) mode.
+
+--------------------------------------------------------------------------------
+FILES
+--------------------------------------------------------------------------------
+  CONNECTORS (ready):
+    fc_link.py          MSP link + RC streamer to the FC (serial or TCP).
+    vision_interface.py the Bearing dataclass + VisionSource base class.
+    math_utils.py       quaternion helpers (q_to_R, etc.).
+    flight_logger.py    per-tick JSON logger.
+    log_analyze.py      reads a run's log and prints a summary.
+  TEMPLATES (you fill in):
+    imu_driver.py       RealIMU -> get_state()=(q,w,accel_body). fake mode included.
+    vision_adapter.py   tracker bbox -> world Bearing. math done; wire source + cal.
+  PLACEHOLDER:
+    command_module.py   outputs an IDLE command each tick. Replace with your
+                        operational module at the end (same construction + .step(t)).
+  HARNESS:
+    hw_bringup.py       bench tests for each connector + a full loop.
+
+  Put everything on the path:
+    export PYTHONPATH="$PWD:$PYTHONPATH"
+    python3 -c "import fc_link, vision_interface, imu_driver, vision_adapter; print('ok')"
+
+--------------------------------------------------------------------------------
+BRING-UP ORDER  (do these in sequence; get each GREEN before the next)
+--------------------------------------------------------------------------------
+STEP 0 — before any hardware: prove the software runs with fakes
+    python3 hw_bringup.py imu --fake
+    python3 hw_bringup.py vision --fake
+    python3 hw_bringup.py loop --fake-imu --fake-vision --no-fc
+  The last runs the full loop structure + logging with no hardware. Then:
+    python3 log_analyze.py ~/logs/run_*.jsonl
+
+STEP 1 — FC link (FC powered, props OFF)
+    python3 hw_bringup.py link --port /dev/ttyAMA0
+  Expect live attitude + IMU from the FC. Fix wiring/port/baud/MSP-on-UART if not.
+
+STEP 2 — RC command path (props OFF)
+    python3 hw_bringup.py rc --port /dev/ttyAMA0
+  Streams idle RC. Confirm the FC's receiver tab shows channels moving. Verify channel
+  order/sign. Confirm the PILOT's transmitter can take manual control at any time
+  (this is your override — test it physically).
+
+STEP 3 — real IMU + attitude
+    Fill in imu_driver.py (two TODOs: _open, _read_raw) and replace the placeholder
+    _ahrs_update with a real attitude filter. Then:
+    python3 hw_bringup.py imu
+  Tilt the airframe by hand -> q must track; level -> accel ~[0,0,-9.8] (FRD). Get
+  the axis conventions right (this feeds everything downstream).
+
+STEP 4 — vision adapter
+    Wire vision_adapter.py section A (get_bbox_fn -> your tracker) and section B
+    (fx/fy/principal point/undistort + the camera-in-body basis from your mount).
+    python3 hw_bringup.py vision
+  Point at a known object -> the bearing must point the right way as you move it.
+
+STEP 5 — full plumbing loop (props OFF)
+    python3 hw_bringup.py loop --port /dev/ttyAMA0
+  Runs the real IMU + vision + FC command path with the idle placeholder. Everything
+  is logged. Analyse:  python3 log_analyze.py ~/logs/run_*.jsonl
+  You should see: good IMU state, a bearing when the object is in view, idle sticks
+  streaming, high track %. This is "all plumbing verified."
+
+--------------------------------------------------------------------------------
+CALIBRATIONS (must be done in steps 3-4; each silently biases the bearing)
+--------------------------------------------------------------------------------
+  - MSP_RAW_IMU scaling in fc_link.py (acc_per_g, gyro scale).
+  - Camera intrinsics + lens distortion (OpenCV checkerboard) -> vision_adapter §B.
+  - Camera<->body mounting (boresight) -> the cam_fwd/right/up basis in vision_adapter.
+  - IMU<->body mounting -> fold into imu_driver output.
+  - Camera-frame <-> IMU-sample time alignment (a mismatch looks like latency).
+
+--------------------------------------------------------------------------------
+LAST STEP — add the operational module
+--------------------------------------------------------------------------------
+  When all of the above is green, replace command_module.py with your operational
+  module. It is constructed the same way (fc, imu, vision) and called the same way
+  each tick (.step(t)). Nothing else in your plumbing changes.
+
+--------------------------------------------------------------------------------
+SAFETY
+--------------------------------------------------------------------------------
+  Props OFF for steps 0-5. A pilot with a transmitter must be able to take manual
+  control instantly at all times. Remove one safety layer at a time when you later
+  progress to powered/tethered/flight tests.
+================================================================================

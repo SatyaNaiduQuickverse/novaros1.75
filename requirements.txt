@@ -1,0 +1,9 @@
+# Runtime dependencies. All three are already present system-wide on this Pi,
+# so `make venv` builds with --system-site-packages rather than recompiling
+# numpy on the Pi's CPU.
+pyserial>=3.5
+numpy>=1.24
+PyYAML>=6.0
+
+# Optional: only needed if camera.dist_coeffs is set (lens undistortion).
+# opencv-python-headless>=4.8
