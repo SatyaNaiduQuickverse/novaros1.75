@@ -431,8 +431,8 @@ class Session:
             rpy = q_to_euler(q)
             if att is not None:
                 with self.lock:
-                    self.track.append((float(rpy[0]), float(rpy[1]),
-                                       att["roll"], att["pitch"]))
+                    self.track.append((time.monotonic(), float(rpy[0]),
+                                       float(rpy[1]), att["roll"], att["pitch"]))
             time.sleep(0.05)
         self._finish()
 
@@ -494,24 +494,44 @@ class Session:
         except Exception as e:
             self.error = str(e)
 
+    # Above this rate the comparison measures sampling lag, not calibration.
+    # The FC's attitude is cached at 10 Hz, so it can be 100 ms stale; at
+    # 150 deg/s that alone manufactures 15 deg of apparent disagreement with
+    # nothing wrong. Measured: a sweep with mean agreement of 2.3 deg peaked at
+    # 15.8 deg purely on the fast segments.
+    TRACK_SLOW_DPS = 40.0
+
     def _fit_track(self, rows):
         if len(rows) < 60:
             raise RuntimeError(f"only {len(rows)} samples — is the FC connected?")
         a = np.array(rows, float)
-        d_roll, d_pitch = a[:, 0] - a[:, 2], a[:, 1] - a[:, 3]
-        moved = float(max(a[:, 2].max() - a[:, 2].min(),
-                          a[:, 3].max() - a[:, 3].min()))
+        t, esp, fc = a[:, 0], a[:, 1:3], a[:, 3:5]
+        d = esp - fc
+        moved = float(max(fc[:, 0].max() - fc[:, 0].min(),
+                          fc[:, 1].max() - fc[:, 1].min()))
         if moved < 25:
             raise RuntimeError(f"the airframe only moved {moved:.0f} deg — tilt "
                                "it properly, agreeing at rest proves nothing")
+        # Angular rate straight from the reference, no extra sensor needed.
+        dt = np.diff(t, prepend=t[0] - 0.05)
+        rate = np.abs(np.diff(fc, axis=0, prepend=fc[:1])).sum(axis=1) / np.maximum(dt, 1e-3)
+        slow = rate < self.TRACK_SLOW_DPS
+        if slow.sum() < 40:
+            raise RuntimeError("almost every sample was taken mid-swing — move "
+                               "more slowly, or pause briefly at each angle")
+        ds = d[slow]
+        # Coverage still has to come from the WHOLE sweep: agreeing slowly at
+        # one angle is worth nothing, which is what `moved` guards.
         return {
-            "kind": "track", "samples": len(rows),
+            "kind": "track", "samples": len(rows), "slow_samples": int(slow.sum()),
             "moved_deg": round(moved, 1),
-            "mean_roll": round(float(np.mean(np.abs(d_roll))), 2),
-            "mean_pitch": round(float(np.mean(np.abs(d_pitch))), 2),
-            "worst_roll": round(float(np.max(np.abs(d_roll))), 2),
-            "worst_pitch": round(float(np.max(np.abs(d_pitch))), 2),
-            "good": bool(np.max(np.abs(d_roll)) < 12 and np.max(np.abs(d_pitch)) < 12),
+            "mean_roll": round(float(np.mean(np.abs(ds[:, 0]))), 2),
+            "mean_pitch": round(float(np.mean(np.abs(ds[:, 1]))), 2),
+            "worst_roll": round(float(np.max(np.abs(ds[:, 0]))), 2),
+            "worst_pitch": round(float(np.max(np.abs(ds[:, 1]))), 2),
+            "worst_any_rate": round(float(np.max(np.abs(d))), 2),
+            "peak_rate_dps": round(float(rate.max()), 0),
+            "good": bool(np.max(np.abs(ds)) < 8),
         }
 
     def _fit_accel(self, raw):

@@ -338,10 +338,11 @@ function showResult(r) {
       not actually at rest. Re-run, moving more slowly and pausing longer.</p>`;
   } else if (r.kind === "track") {
     html += `<table>
-      <tr><td>samples</td><td>${r.samples}</td></tr>
-      <tr><td>airframe moved through</td><td>${r.moved_deg}&deg;</td></tr>
+      <tr><td>samples</td><td>${r.samples} (${r.slow_samples} slow enough to judge)</td></tr>
+      <tr><td>airframe moved through</td><td>${r.moved_deg}&deg;, peak ${r.peak_rate_dps}&deg;/s</td></tr>
       <tr><td>roll disagreement, mean / worst</td><td>${r.mean_roll}&deg; / ${r.worst_roll}&deg;</td></tr>
       <tr><td>pitch disagreement, mean / worst</td><td>${r.mean_pitch}&deg; / ${r.worst_pitch}&deg;</td></tr>
+      <tr><td>worst at any speed</td><td>${r.worst_any_rate}&deg; &mdash; includes sampling lag, not judged</td></tr>
       </table>`;
     if (!r.good) html += `<p class="note">The ESP32 does not follow the airframe
       closely enough while moving. Static agreement is not sufficient — recheck
