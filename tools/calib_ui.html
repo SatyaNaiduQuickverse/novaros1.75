@@ -291,6 +291,7 @@ $("#bConnect").onclick = async () => {
   $("#connMsg").textContent = " connected";
   for (const id of ["#live","#model","#progress","#step1","#step2","#step3"])
     $(id).hidden = false;
+  modelOn = true;
 };
 
 document.querySelectorAll("button.start").forEach(btn => {
@@ -365,7 +366,11 @@ const apply = (R,v) => [R[0][0]*v[0]+R[0][1]*v[1]+R[0][2]*v[2],
                         R[2][0]*v[0]+R[2][1]*v[1]+R[2][2]*v[2]];
 
 // Orthographic 3/4 view. World is NED, so screen up is -z.
-const AZ = 38*Math.PI/180, EL = 24*Math.PI/180;
+// Nearly straight-on from BEHIND, which is where a pilot stands. The earlier
+// 38 deg azimuth put the nose off to the left, making "which side of the
+// picture is the drone's right" a judgement call — and a judgement call is
+// exactly what this panel exists to remove.
+const AZ = 8*Math.PI/180, EL = 26*Math.PI/180;
 function project(w, cx, cy, s) {
   const X = w[1], Y = w[0], Z = -w[2];            // east, north, up
   const sx = X*Math.cos(AZ) - Y*Math.sin(AZ);
@@ -425,12 +430,48 @@ function drawDrone(canvasId, rollDeg, pitchDeg) {
   const h1 = P([1.05,0.14,0]), h2 = P([1.05,-0.14,0]);
   g.beginPath(); g.moveTo(n1[0],n1[1]); g.lineTo(h1[0],h1[1]);
   g.lineTo(h2[0],h2[1]); g.closePath(); g.fill();
+  // Wingtip labels. The whole point of the picture is that no one has to work
+  // out which side is which, so it is written on it.
+  g.font = "bold 13px system-ui"; g.textAlign = "center"; g.textBaseline = "middle";
+  const tag = (v, txt, col) => {
+    const q = P(v); g.fillStyle = col; g.fillText(txt, q[0], q[1]);
+  };
+  tag([0, 1.15, -0.05], "R", "#f0883e");
+  tag([0, -1.15, -0.05], "L", "#f0883e");
+  g.font = "bold 11px system-ui";
+  tag([1.62, 0, 0], "NOSE", "#f85149");
   // "up" mast, so an inversion is unmistakable
   g.strokeStyle = acc; g.lineWidth = 2;
   const u0 = P([0,0,0]), u1 = P([0,0,-0.75]);
   g.beginPath(); g.moveTo(u0[0],u0[1]); g.lineTo(u1[0],u1[1]); g.stroke();
   g.beginPath(); g.arc(u1[0],u1[1],4,0,6.3); g.fill? g.stroke():0;
 }
+
+// Render on requestAnimationFrame and ease toward the latest sample, rather
+// than redrawing once per poll. Polling faster would not help — the underlying
+// data genuinely arrives at tens of Hz — so the jitter to remove is the gap
+// BETWEEN samples, which is interpolation's job, not the network's.
+const tgt = {er:0, ep:0, fr:0, fp:0};
+const cur = {er:0, ep:0, fr:0, fp:0};
+// Shortest way round: roll wraps at +-180, and easing 179 -> -179 the long way
+// would spin the model through a full turn on a one-degree change.
+function ease(a, b, k) {
+  let d = b - a;
+  while (d > 180) d -= 360;
+  while (d < -180) d += 360;
+  return a + d * k;
+}
+let modelOn = false;
+function animate() {
+  if (modelOn) {
+    const k = 0.22;
+    for (const key of ["er","ep","fr","fp"]) cur[key] = ease(cur[key], tgt[key], k);
+    drawDrone("#cvEsp", cur.er, cur.ep);
+    drawDrone("#cvFc", cur.fr, cur.fp);
+  }
+  requestAnimationFrame(animate);
+}
+requestAnimationFrame(animate);
 
 function drawSphere(pts) {
   const c = $("#sphere"), g = c.getContext("2d");
@@ -526,10 +567,11 @@ async function tick() {
   $("#fcline").textContent = s.fc && !s.fc.error
     ? `FC says roll ${s.fc.roll}°  pitch ${s.fc.pitch}°` : "";
 
-  drawDrone("#cvEsp", s.rpy[0], s.rpy[1]);
+  // Hand the animator a target; it renders at display rate, not poll rate.
+  tgt.er = s.rpy[0]; tgt.ep = s.rpy[1];
   $("#mEsp").textContent = `roll ${s.rpy[0].toFixed(1)}°   pitch ${s.rpy[1].toFixed(1)}°`;
   if (s.fc && !s.fc.error) {
-    drawDrone("#cvFc", s.fc.roll, s.fc.pitch);
+    tgt.fr = s.fc.roll; tgt.fp = s.fc.pitch;
     $("#mFc").textContent = `roll ${s.fc.roll.toFixed(1)}°   pitch ${s.fc.pitch.toFixed(1)}°`;
   }
 
@@ -610,7 +652,7 @@ async function tick() {
     $("#result").innerHTML = `<span class="pill bad">could not fit</span>
       <p class="note">${s.error}</p>`;
   }
-  setTimeout(tick, running ? 120 : 350);
+  setTimeout(tick, running ? 100 : 140);
 }
 tick();
 </script>
