@@ -138,6 +138,21 @@
       numbers give it away.</p>
   </div>
 
+  <!-- ------------------------------------------------------ sign check -->
+  <div class="panel" id="signs" hidden>
+    <div class="lbl" style="margin-bottom:6px">Sign check &mdash; you label the truth</div>
+    <p class="note" style="margin:0 0 12px">
+      Hold the airframe in a position, then press its button. Both sensors are
+      recorded and checked against what that position REQUIRES. Nothing here is
+      inferred &mdash; you are the ground truth, which is the point: every sign
+      error so far came from something inferring rather than being told.</p>
+    <div class="grid6" id="poseBtns"></div>
+    <div id="markTable" style="margin-top:14px"></div>
+    <div style="margin-top:12px">
+      <button id="bClearMarks" class="ghost">Clear</button>
+    </div>
+  </div>
+
   <!-- --------------------------------------------------------- progress -->
   <div class="panel" id="progress" hidden>
     <div class="row" style="align-items:flex-start">
@@ -289,7 +304,7 @@ $("#bConnect").onclick = async () => {
   b.disabled = false;
   if (!r.ok) { $("#connMsg").textContent = " " + (r.error || "failed"); return; }
   $("#connMsg").textContent = " connected";
-  for (const id of ["#live","#model","#progress","#step1","#step2","#step3"])
+  for (const id of ["#live","#model","#signs","#progress","#step1","#step2","#step3"])
     $(id).hidden = false;
   modelOn = true;
 };
@@ -305,6 +320,38 @@ document.querySelectorAll("button.start").forEach(btn => {
   };
 });
 $("#bCancel").onclick = () => post("/api/cancel");
+$("#bClearMarks").onclick = () => post("/api/marks/clear");
+
+let poseBtnsBuilt = false;
+function buildPoseButtons(list) {
+  if (poseBtnsBuilt || !list || !list.length) return;
+  poseBtnsBuilt = true;
+  $("#poseBtns").innerHTML = list.map(p =>
+    `<button class="poseb" data-pose="${p.key}" style="width:100%">${p.label}</button>`
+  ).join("");
+  document.querySelectorAll(".poseb").forEach(b => {
+    b.onclick = async () => {
+      b.disabled = true; const t = b.textContent; b.textContent = "recording...";
+      await post("/api/mark", {pose: b.dataset.pose});
+      b.textContent = t; b.disabled = false;
+    };
+  });
+}
+
+function renderMarks(marks) {
+  if (!marks || !marks.length) { $("#markTable").innerHTML = ""; return; }
+  const cell = (v, ok) =>
+    `<td style="color:${ok ? 'var(--ok)' : 'var(--bad)'}">${v}</td>`;
+  $("#markTable").innerHTML = `<table>
+    <tr class="note"><td style="text-align:left">position</td>
+      <td>ESP32 roll/pitch</td><td>FC roll/pitch</td></tr>` +
+    marks.map(m => `<tr><td style="text-align:left">${m.label}</td>` +
+      cell(`${m.esp_roll}° / ${m.esp_pitch}°`, m.esp_ok) +
+      cell(`${m.fc_roll}° / ${m.fc_pitch}°`, m.fc_ok) + `</tr>`).join("") +
+    `</table><p class="note" style="margin:10px 0 0">Green means the sensor
+     agrees with the position you said you were holding. Red means that sign is
+     wrong &mdash; and which column is red says whose.</p>`;
+}
 
 let slOn = false;
 $("#bSL").onclick = async () => {
@@ -375,7 +422,12 @@ function project(w, cx, cy, s) {
   const X = w[1], Y = w[0], Z = -w[2];            // east, north, up
   const sx = X*Math.cos(AZ) - Y*Math.sin(AZ);
   const depth = X*Math.sin(AZ) + Y*Math.cos(AZ);
-  const sy = Z*Math.cos(EL) - depth*Math.sin(EL);
+  // PLUS, not minus. With a minus the far end of the ground grid draws LOWER
+  // than the near end, so the scene reads as seen from UNDERNEATH — and from
+  // below, a right-wing-down is indistinguishable from left-wing-down. The
+  // maths was right and the viewpoint was upside down, which is why the tiles
+  // (same data, no 3D) read correctly while the model looked mirrored.
+  const sy = Z*Math.cos(EL) + depth*Math.sin(EL);
   return [cx + s*sx, cy - s*sy, depth];
 }
 
@@ -574,6 +626,9 @@ async function tick() {
     tgt.fr = s.fc.roll; tgt.fp = s.fc.pitch;
     $("#mFc").textContent = `roll ${s.fc.roll.toFixed(1)}°   pitch ${s.fc.pitch.toFixed(1)}°`;
   }
+
+  buildPoseButtons(s.poses_todo);
+  renderMarks(s.marks);
 
   const done = capsRender(s.covered || [], s.pose);
   $("#capCount").textContent = ` ${done} of 6`

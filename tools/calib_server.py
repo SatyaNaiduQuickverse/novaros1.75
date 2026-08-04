@@ -197,6 +197,7 @@ class Session:
         self.fc_grav = None
         self.fc_spec = None
         self.fc_at = 0.0
+        self.marks = {}             # operator-labelled ground truth, see /api/mark
         self.probe = None           # SelfLevelProbe, when step 3 is watching
         self.probe_error = None
         self.track = []             # (esp roll, esp pitch, fc roll, fc pitch)
@@ -311,6 +312,9 @@ class Session:
             "calibrated": len(self.cfg.imu32.accel_per_g_axis) == 3,
             "axis_verified": bool(self.cfg.imu32.verified),
             "config_path": self.cfg.source,
+            "marks": [self.marks[k] for k in self.POSE_SPEC if k in self.marks],
+            "poses_todo": [{"key": k, "label": self.POSE_LABEL[k]}
+                           for k in self.POSE_SPEC],
         }
         att = self.fc_att
         if att is not None:
@@ -408,6 +412,59 @@ class Session:
             if float(np.dot(v, np.array(t, float))) > thresh:
                 return name
         return None
+
+    # ------------------------------------------------------- labelled poses
+
+    # What each pose REQUIRES of roll/pitch in body FRD, as a (field, lo, hi).
+    # The operator labels the truth by pressing the button while holding the
+    # airframe; everything else in this file infers, and inference is what kept
+    # producing plausible wrong answers.
+    POSE_SPEC = {
+        "level":      [("roll", -15, 15), ("pitch", -15, 15)],
+        "nose_up":    [("pitch", 25, 90)],
+        "nose_down":  [("pitch", -90, -25)],
+        "roll_right": [("roll", 25, 90)],
+        "roll_left":  [("roll", -90, -25)],
+        "inverted":   [("absroll", 150, 181)],
+    }
+    POSE_LABEL = {
+        "level": "Level", "nose_up": "Nose up (camera at ceiling)",
+        "nose_down": "Nose down (camera at floor)",
+        "roll_right": "Roll right (R wing down)",
+        "roll_left": "Roll left (L wing down)", "inverted": "Inverted",
+    }
+
+    def mark(self, pose: str) -> dict:
+        """Record both sensors, labelled with what the operator says this IS."""
+        if pose not in self.POSE_SPEC:
+            raise RuntimeError(f"unknown pose {pose!r}")
+        if self.imu is None:
+            raise RuntimeError("not connected")
+        from companion.math_utils import q_to_euler
+        esp, fcs = [], []
+        end = time.monotonic() + 0.6
+        while time.monotonic() < end:
+            q, _, _ = self.imu.get_state()
+            esp.append(q_to_euler(q)[:2])
+            with self.lock:
+                att = self.fc_att
+            if att is not None:
+                fcs.append([att["roll"], att["pitch"]])
+            time.sleep(0.02)
+        e = np.mean(esp, axis=0)
+        f = np.mean(fcs, axis=0) if fcs else [float("nan")] * 2
+        rec = {"pose": pose, "label": self.POSE_LABEL[pose],
+               "esp_roll": round(float(e[0]), 1), "esp_pitch": round(float(e[1]), 1),
+               "fc_roll": round(float(f[0]), 1), "fc_pitch": round(float(f[1]), 1),
+               "raw": [round(float(v), 1) for v in self.imu._raw_accel]}
+        for who, r, pch in (("esp", rec["esp_roll"], rec["esp_pitch"]),
+                            ("fc", rec["fc_roll"], rec["fc_pitch"])):
+            vals = {"roll": r, "pitch": pch, "absroll": abs(r)}
+            ok = all(lo <= vals[k] <= hi for k, lo, hi in self.POSE_SPEC[pose])
+            rec[who + "_ok"] = bool(ok)
+        with self.lock:
+            self.marks[pose] = rec
+        return rec
 
     # ------------------------------------------------------------ collection
 
@@ -720,6 +777,12 @@ class Handler(BaseHTTPRequestHandler):
                 if mode == "axis":
                     s.start_fc()
                 s.begin(mode, float(body.get("seconds", 90)))
+                return self._send(200, json.dumps({"ok": True}))
+            if self.path == "/api/mark":
+                return self._send(200, json.dumps(s.mark(body.get("pose", "")),
+                                                  default=_jsonable))
+            if self.path == "/api/marks/clear":
+                s.marks = {}
                 return self._send(200, json.dumps({"ok": True}))
             if self.path == "/api/selflevel":
                 if body.get("on"):
