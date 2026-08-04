@@ -35,12 +35,17 @@ reference/            the original unmodified kit, for diffing
 
 ```bash
 python3 tools/find_fc.py   # identify the FC after any board swap
-make test          # 144 offline tests, no hardware
+make test          # 169 offline tests, no hardware
 make loop-fake     # the whole loop with fake IMU, fake vision, no FC
 make preflight     # with the FC plugged in: who is on the port
 ```
 
 Then work through [docs/SETUP_HARDWARE.md](docs/SETUP_HARDWARE.md) in order.
+
+Signs — attitude, correction direction, channel values — are measured on this
+airframe, never assumed. [docs/SIGN_CONVENTIONS.md](docs/SIGN_CONVENTIONS.md)
+records what was measured and the five sign errors that got there, each of
+which passed every check available to it while being wrong.
 
 If the ESP32 IMU is involved at all, read
 [docs/ESP32_BRIDGE_FAULTS.md](docs/ESP32_BRIDGE_FAULTS.md) first. It documents

@@ -253,6 +253,13 @@ acceleration and poisons the answer. Move-and-pause, not wave.
 > mode. Tests cover both the one-octant cloud and a single-axis-of-rotation
 > spin.
 
+### Signs
+
+Everything above establishes the MAGNITUDE of the calibration. The signs are a
+separate problem and a worse one — see **[SIGN_CONVENTIONS.md](SIGN_CONVENTIONS.md)**,
+which records five sign errors from this bring-up, each of which agreed with
+every cross-check available to it while being backwards.
+
 ### Order matters
 
 ```

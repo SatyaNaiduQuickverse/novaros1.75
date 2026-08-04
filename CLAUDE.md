@@ -54,6 +54,28 @@ look exactly like nothing being wrong:
 Calibrate in this order — each result feeds the next:
 `--calibrate` → `--accel-cal` → `--axis-map`.
 
+## Signs are measured here, never assumed
+
+Read **`docs/SIGN_CONVENTIONS.md`**. Five sign errors surfaced during bring-up
+and every one produced a confident, plausible answer that passed every check
+available to it. Two agreed with an independent sensor to a tenth of a degree
+while being backwards.
+
+- **Betaflight reports pitch positive NOSE DOWN on this board** (`imu.pitch_sign
+  = -1`). Roll is the textbook sign. Do not infer either from the other.
+- **Correcting a right-side-down tilt commands roll BELOW 1500; correcting a
+  nose-up tilt commands pitch ABOVE 1500** — opposite senses, even though both
+  sticks read 2012 at full deflection.
+- **A shared error is invisible to a cross-check.** The axis-map fit aligns the
+  ESP32 to the FC's frame, so a wrong sign in that frame is absorbed and both
+  sensors agree while both are wrong. Only an external reference — the
+  operator, a picture, a pose name — can see it.
+- **The instrument that settles a sign** is the calibration UI's sign check:
+  six buttons, operator holds the position and presses, both sensors checked
+  against what that position requires. `make calib-ui`.
+- **Say "camera pointing at the ceiling", never "nose up"** — the airframe and
+  the stick are opposite, since a multirotor pitches nose-DOWN to fly forward.
+
 ## Verifying claims
 
 - **Do not trust a status report over the tree.** A handoff message once
