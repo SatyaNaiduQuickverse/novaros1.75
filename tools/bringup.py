@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import math
 import os
 import sys
 import threading
@@ -646,7 +647,11 @@ def t_imu32(a):
             return _imu32_tumble_cal(imu, cfg, seconds=a.duration or 60.0)
 
         if a.axis_map:
-            return _imu32_axis_map(imu, cfg)
+            # Against the FC by default: it is a second sensor on the same
+            # airframe, so it cannot agree with a wrong answer by accident.
+            if a.no_fc:
+                return _imu32_axis_map(imu, cfg)
+            return _imu32_axis_map_fc(imu, cfg, seconds=a.duration or 60.0)
 
         print(f"ESP32 IMU — 5 s of live state ({imu.port})")
         t0 = time.time()
@@ -905,6 +910,149 @@ def _imu32_accel_cal(imu, cfg):
           + f" per-axis scale spread {spread_pct:.1%}"
           + ("" if spread_pct < 0.05 else " — large, but now corrected for"))
     return 0
+
+
+def _gravity_in_body_from_fc(att):
+    """Unit gravity direction in airframe FRD, from the FC's own attitude.
+
+    Only roll and pitch are used. Yaw is deliberately ignored: it is
+    unobservable from gravity, it drifts on both estimators, and it cancels
+    out of this comparison entirely — which is what makes the check robust.
+    """
+    r, p = math.radians(att["roll"]), math.radians(att["pitch"])
+    # Third row of the world->body rotation, i.e. NED down expressed in body.
+    return np.array([-math.sin(p),
+                     math.sin(r) * math.cos(p),
+                     math.cos(r) * math.cos(p)])
+
+
+def _snap_to_signed_permutation(M):
+    """Nearest (axis, sign) map to a measured rotation, greedily by magnitude.
+
+    A mounting is always a signed permutation — the board is bolted at some
+    multiple of 90 degrees, not at 37. Snapping to that removes the noise and
+    yields the map the config actually wants. Returns (rows, quality) where
+    quality is the smallest winning |component|: near 1.0 means the axis was
+    unambiguous, near 0.7 means two axes were nearly tied and the mounting is
+    NOT square to the airframe.
+    """
+    M = np.asarray(M, float)
+    rows, used, quality = [], set(), 1.0
+    order = sorted(range(3), key=lambda i: -np.max(np.abs(M[i])))
+    out = [None] * 3
+    for i in order:
+        cand = [j for j in range(3) if j not in used]
+        j = cand[int(np.argmax(np.abs(M[i, cand])))]
+        used.add(j)
+        out[i] = (j, float(np.sign(M[i, j]) or 1.0))
+        quality = min(quality, abs(M[i, j]))
+    rows = out
+    return rows, quality
+
+
+def _imu32_axis_map_fc(imu, cfg, seconds=60.0):
+    """Derive the sensor->body axis map by comparing against the FC's attitude.
+
+    The ESP32 and the flight controller are bolted to the same rigid airframe,
+    so at every instant they see the SAME gravity vector expressed in two
+    frames that differ by a fixed rotation. Collect enough orientations and
+    that rotation is recoverable directly (Kabsch), which beats the
+    level/nose-up/roll-right procedure on every axis that matters:
+
+      - no reliance on the operator's idea of "nose up" or "about 30 degrees"
+      - no reliance on any single pose being square to anything
+      - it is a genuinely INDEPENDENT reference. Betaflight's estimate comes
+        from a different die, calibrated by different software, so it cannot
+        agree with a wrong ESP32 axis map by construction.
+
+    Requires the ESP32 to be rigidly mounted to the airframe. If it can move
+    relative to the FC this is meaningless, and the residual will say so.
+    """
+    from companion.fc_link import FCLink
+    print("PROPS OFF. This compares the ESP32 against the FC's own attitude,")
+    print("so the ESP32 must be RIGIDLY MOUNTED to the airframe — if it can")
+    print("shift relative to the flight controller the result is worthless.\n")
+    if len(cfg.imu32.accel_per_g_axis) != 3:
+        print(WARN, "accel_offset/accel_per_g_axis not set — run --accel-cal "
+                    "first, or the ~0.17 g offset biases every sample here")
+
+    fc = FCLink(cfg).connect()
+    try:
+        att = fc.attitude()
+        print(f"FC attitude reads roll={att['roll']:+.1f} pitch={att['pitch']:+.1f}")
+        _prompt("Ready to tumble?")
+        for n in range(10, 0, -1):
+            print(f"    starting in {n} ...")
+            time.sleep(1.0)
+        print("    GO — turn it slowly, pausing a second each time.\n")
+
+        pairs, stop, last = [], time.time() + seconds, 0.0
+        bias = np.asarray(imu.gyro_bias, float)
+        from companion.imu_esp32 import GYRO_LSB_PER_DPS
+        still = 8.0 * GYRO_LSB_PER_DPS
+        while time.time() < stop:
+            g = imu._raw_gyro.copy() - bias
+            if np.max(np.abs(g)) < still:
+                _, _, a_body = imu.get_state()      # calibrated, axis map applied
+                a_sensor = imu._raw_accel.copy()
+                if np.linalg.norm(a_sensor) > 1:
+                    try:
+                        v_fc = _gravity_in_body_from_fc(fc.attitude())
+                    except Exception:
+                        continue
+                    a_hat = a_sensor / np.linalg.norm(a_sensor)
+                    pairs.append((a_hat, v_fc))
+            if time.time() - last > 3.0 and pairs:
+                last = time.time()
+                spread = _turned_span([p[1] for p in pairs])
+                print(f"    {int(stop - time.time()):3d}s left  paired samples "
+                      f"{len(pairs):4d}  FC gravity swept "
+                      + " ".join(f"{v:.2f}" for v in spread))
+            time.sleep(0.05)
+    finally:
+        fc.close()
+
+    if len(pairs) < 60:
+        print(BAD, f"only {len(pairs)} paired samples — hold each pose longer")
+        return 1
+    S = np.array([p[0] for p in pairs])      # sensor frame
+    B = np.array([p[1] for p in pairs])      # airframe FRD, per the FC
+    if np.any(_turned_span(B) < 0.6):
+        print(BAD, "the FC never saw gravity swing far enough on every axis — "
+                   "turn the airframe through more orientations")
+        return 1
+
+    # Kabsch: the rotation carrying sensor-frame gravity onto body-frame gravity.
+    U, _, Vt = np.linalg.svd(S.T @ B)
+    d = np.sign(np.linalg.det(Vt.T @ U.T))
+    M = Vt.T @ np.diag([1.0, 1.0, d]) @ U.T
+    resid = np.degrees(np.mean([
+        math.acos(np.clip(np.dot(M @ s, b), -1, 1)) for s, b in zip(S, B)]))
+    rows, quality = _snap_to_signed_permutation(M)
+
+    print("\n" + "=" * 62)
+    print(f"fitted from {len(pairs)} paired samples")
+    print("measured rotation (sensor -> airframe FRD):")
+    for r in M:
+        print("   [" + "  ".join(f"{v:+.3f}" for v in r) + "]")
+    print(f"  mean angle between the two sensors' gravity: {resid:.2f} deg")
+    print(f"  snap confidence: {quality:.3f}  (1.0 = square mounting)")
+    print("\npaste into config/vehicle.yaml under imu32:\n")
+    print("  axis_map:")
+    for src, sign in rows:
+        print(f"    - [{src}, {sign:+.0f}]")
+    print("  verified: true")
+    print("=" * 62)
+    ok = resid < 8.0 and quality > 0.80
+    if not ok:
+        print(BAD, f"residual {resid:.1f} deg / confidence {quality:.2f} — the "
+                   "two sensors do not agree well enough to trust this.")
+        print("      Either the ESP32 is not rigidly mounted, the accel "
+              "calibration has not been done, or the FC's own accel needs "
+              "calibrating in Betaflight Configurator.")
+    else:
+        print(OK, "the ESP32 and the FC agree on which way is down")
+    return 0 if ok else 1
 
 
 def _imu32_axis_map(imu, cfg):

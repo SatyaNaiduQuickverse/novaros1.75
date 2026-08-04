@@ -237,6 +237,82 @@ class TestEllipsoidFit(unittest.TestCase):
             self._fit(v * 2048.0 + np.array([0.0, 0.0, 350.0]))
 
 
+class TestAxisMapAgainstFC(unittest.TestCase):
+    """The FC is a second sensor on the same airframe — an independent witness.
+
+    Its estimate comes from a different die calibrated by different software,
+    so it cannot agree with a wrong ESP32 axis map by construction. That is
+    what makes it worth an MSP transaction, and what the level/nose-up/
+    roll-right procedure could never provide: that one only ever checks the
+    ESP32 against the operator's idea of "nose up".
+    """
+
+    @staticmethod
+    def _tools():
+        sys.path.insert(0, os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"))
+        import bringup
+        return bringup
+
+    def test_level_gravity_points_down_in_body(self):
+        b = self._tools()
+        np.testing.assert_allclose(
+            b._gravity_in_body_from_fc({"roll": 0.0, "pitch": 0.0}),
+            [0, 0, 1], atol=1e-9)
+
+    def test_nose_up_moves_gravity_to_minus_x(self):
+        b = self._tools()
+        v = b._gravity_in_body_from_fc({"roll": 0.0, "pitch": 30.0})
+        self.assertAlmostEqual(v[0], -0.5, places=6)
+        self.assertAlmostEqual(v[2], math.cos(math.radians(30)), places=6)
+
+    def test_right_roll_moves_gravity_to_plus_y(self):
+        b = self._tools()
+        v = b._gravity_in_body_from_fc({"roll": 30.0, "pitch": 0.0})
+        self.assertAlmostEqual(v[1], 0.5, places=6)
+
+    def test_gravity_direction_is_always_unit_length(self):
+        b = self._tools()
+        for r in (-80, -35, 0, 12, 70):
+            for p in (-70, -20, 0, 45, 85):
+                v = b._gravity_in_body_from_fc({"roll": float(r), "pitch": float(p)})
+                self.assertAlmostEqual(np.linalg.norm(v), 1.0, places=9)
+
+    def test_kabsch_recovers_a_known_mounting(self):
+        """Full round trip: bolt the board at a known 90 deg rotation, find it."""
+        b = self._tools()
+        truth = np.array([[0.0, 1.0, 0.0],       # sensor y -> body x
+                          [-1.0, 0.0, 0.0],      # sensor x -> body y, flipped
+                          [0.0, 0.0, 1.0]])
+        rng = np.random.default_rng(11)
+        S = rng.normal(size=(300, 3))
+        S /= np.linalg.norm(S, axis=1, keepdims=True)
+        B = (truth @ S.T).T
+        U, _, Vt = np.linalg.svd(S.T @ B)
+        d = np.sign(np.linalg.det(Vt.T @ U.T))
+        M = Vt.T @ np.diag([1.0, 1.0, d]) @ U.T
+        np.testing.assert_allclose(M, truth, atol=1e-9)
+        rows, quality = b._snap_to_signed_permutation(M)
+        self.assertEqual(rows, [(1, 1.0), (0, -1.0), (2, 1.0)])
+        self.assertGreater(quality, 0.99)
+
+    def test_snap_never_assigns_one_sensor_axis_twice(self):
+        """A duplicated source axis is a silently unusable map — reject by design."""
+        b = self._tools()
+        rng = np.random.default_rng(5)
+        for _ in range(50):
+            rows, _ = b._snap_to_signed_permutation(rng.normal(size=(3, 3)))
+            self.assertEqual(len({r[0] for r in rows}), 3)
+
+    def test_snap_confidence_falls_for_a_skew_mounting(self):
+        """45 deg between two axes must NOT be reported as a clean map."""
+        b = self._tools()
+        c = math.cos(math.radians(45))
+        skew = np.array([[c, c, 0.0], [-c, c, 0.0], [0.0, 0.0, 1.0]])
+        _, quality = b._snap_to_signed_permutation(skew)
+        self.assertLess(quality, 0.80)
+
+
 class TestSequenceAndIntegrity(unittest.TestCase):
     def test_dropped_samples_are_counted(self):
         imu = make_imu()
