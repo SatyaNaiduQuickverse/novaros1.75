@@ -321,17 +321,22 @@ class Session:
             try:
                 cmd = self.probe.step()
                 tilt = math.hypot(rpy[0], rpy[1])
-                # The delivered module was accepted on this rule for ROLL: a
-                # positive roll (right side down) must pull the roll channel
-                # below centre. Anything else drives INTO the tilt. Pitch is
-                # judged the same way for self-consistency — but see below,
-                # that is a weaker claim.
-                def judge(angle, chan):
+                # Which way a correction must go is MEASURED from the pilot's
+                # transmitter, not assumed. Right-side-down (positive roll) is
+                # corrected by rolling LEFT; nose-UP (positive pitch) by
+                # pitching the nose DOWN. Those are opposite senses, so a rule
+                # that treated the axes symmetrically judged pitch backwards.
+                ch = self.cfg.channels
+                sign_roll = -1 if ch.roll_right_us > 1500 else 1
+                sign_pitch = 1 if ch.nose_down_us > 1500 else -1
+
+                def judge(angle, chan, sign):
                     if abs(angle) <= 8:
                         return None
-                    return "opposes" if (cmd.get(chan, 1500) - 1500) * angle < 0 \
+                    return "opposes" if (cmd.get(chan, 1500) - 1500) * angle * sign > 0 \
                         else "DRIVES INTO THE TILT"
-                v_roll, v_pitch = judge(rpy[0], "roll"), judge(rpy[1], "pitch")
+                v_roll = judge(rpy[0], "roll", sign_roll)
+                v_pitch = judge(rpy[1], "pitch", sign_pitch)
                 verdict = next((v for v in (v_roll, v_pitch)
                                 if v == "DRIVES INTO THE TILT"), None) \
                     or next((v for v in (v_roll, v_pitch) if v), None)

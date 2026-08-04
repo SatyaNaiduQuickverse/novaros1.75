@@ -57,6 +57,20 @@ channels:
   # A mismatch is not cosmetic — the wire-envelope check would police the
   # wrong channels and can abort the stream on the pilot's own throttle.
   override_mask: 15
+  # ✅ MEASURED 2026-08-05 from the pilot's transmitter, override switch DOWN,
+  # each stick held at full deflection with 0 us of jitter:
+  #   pitch stick FORWARD (the fly-forward input, so nose DOWN) -> 2012
+  #   roll  stick RIGHT                                          -> 2012
+  # ⇒ NOSE DOWN and ROLL RIGHT are both ABOVE centre on this airframe, so
+  #   correcting a NOSE-UP tilt commands pitch ABOVE 1500, while correcting a
+  #   RIGHT-side-down tilt commands roll BELOW 1500. Opposite senses despite
+  #   both sticks reading high — which is why this is measured and not inferred
+  #   from roll by symmetry. The self-level check judged pitch backwards until
+  #   this was taken.
+  # Also confirmed here: the pitch stick drives MSP_RC index 1, full travel
+  # 989..2012, found by sweeping all 16 channels rather than trusting the map.
+  roll_right_us: 2012
+  nose_down_us: 2012
 
 limits:
   # bench | tethered | flight. Keep "bench" until the whole loop is verified.

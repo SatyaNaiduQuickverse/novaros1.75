@@ -60,6 +60,18 @@ class ChannelConfig:
     # Getting this wrong is not cosmetic: the wire-envelope check would judge
     # the pilot's own stick against the companion's limits and false-abort.
     override_mask: int = 15
+    # Full-deflection channel values for a NAMED AIRFRAME MOTION, measured from
+    # the pilot's own transmitter. These decide which way a correction has to
+    # go, and they cannot be derived: the mapping from channel value to airframe
+    # motion depends on the transmitter, the channel order and any reversals,
+    # none of which are visible from the companion side.
+    #
+    # Do NOT assume the two axes match. On this airframe both happen to sit
+    # above centre, but the correction directions still differ in sign, because
+    # correcting a right-side-down tilt means rolling LEFT while correcting a
+    # nose-UP tilt means pitching the nose DOWN.
+    roll_right_us: int = 2012       # roll stick full right
+    nose_down_us: int = 2012        # pitch stick full forward
 
 
 @dataclass
