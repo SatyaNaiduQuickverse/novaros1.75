@@ -51,9 +51,30 @@ STILL_DPS = 8.0
 # 30 deg gives six caps that do not overlap and are reachable by hand without
 # any pose being square to anything.
 CAP_DEG = 30.0
-TARGETS = [("+X", (1, 0, 0)), ("-X", (-1, 0, 0)),
-           ("+Y", (0, 1, 0)), ("-Y", (0, -1, 0)),
-           ("+Z", (0, 0, 1)), ("-Z", (0, 0, -1))]
+# Seconds between pressing Start and the clock starting, so the operator can
+# actually pick the airframe up.
+LEAD_IN_S = 10.0
+# Coverage targets, named the way a person holding a drone thinks. These are
+# AIRFRAME directions, classified from the flight controller's own attitude —
+# the ESP32's own axes cannot be named yet, because working out which sensor
+# axis is which IS step 2. Since the two are rigidly bolted together, covering
+# all six airframe directions covers all six sensor directions, so this is
+# equivalent for the fit and far easier to act on.
+#
+# Gravity in body FRD: level puts it on +z, nose up tilts it to -x, rolling
+# right tilts it to +y.
+BODY_TARGETS = [
+    ("Level",      (0, 0, 1),  "upright, sitting as it flies"),
+    ("Inverted",   (0, 0, -1), "upside down"),
+    ("Nose up",    (-1, 0, 0), "pitch up, nose toward the sky"),
+    ("Nose down",  (1, 0, 0),  "pitch down, nose toward the ground"),
+    ("Roll right", (0, 1, 0),  "right side down"),
+    ("Roll left",  (0, -1, 0), "left side down"),
+]
+# Fallback when no FC is connected: the sensor's own axes, unnameable.
+SENSOR_TARGETS = [("Sensor +X", (1, 0, 0), ""), ("Sensor -X", (-1, 0, 0), ""),
+                  ("Sensor +Y", (0, 1, 0), ""), ("Sensor -Y", (0, -1, 0), ""),
+                  ("Sensor +Z", (0, 0, 1), ""), ("Sensor -Z", (0, 0, -1), "")]
 
 
 class Session:
@@ -65,14 +86,23 @@ class Session:
         self.fc = None
         self.lock = threading.Lock()
         self.mode = "idle"          # idle | accel | axis
-        self.samples = []           # sensor-frame unit vectors (+ FC pairs)
+        self.samples = []           # sensor-frame unit vectors
+        self.body = []              # matching airframe-frame gravity, from the FC
         self.raw = []               # raw counts, for the ellipsoid fit
         self.pairs = []             # (sensor unit, FC body unit) for the axis map
         self.result = None
         self.error = None
         self.started = 0.0
+        self.armed_at = 0.0
         self.duration = 0.0
         self._stop = threading.Event()
+        # Cached FC attitude. Polled on its own slow thread rather than read on
+        # demand: every read costs an MSP transaction from a budget of ~62/s on
+        # this board, and sampling it per accel sample would saturate the link
+        # and silently slow every other rate.
+        self.fc_att = None
+        self.fc_grav = None
+        self.fc_at = 0.0
 
     # ------------------------------------------------------------- hardware
 
@@ -87,7 +117,30 @@ class Session:
         if self.fc is None:
             from companion.fc_link import FCLink
             self.fc = FCLink(self.cfg).connect()
+            threading.Thread(target=self._fc_poll, name="fc-att",
+                             daemon=True).start()
         return self.fc
+
+    def _fc_poll(self):
+        """~10 Hz attitude, well inside the MSP budget. Never raises."""
+        while not self._stop.is_set():
+            try:
+                att = self.fc.attitude()
+                grav = _gravity_in_body_from_fc(att)
+                with self.lock:
+                    self.fc_att, self.fc_grav = att, grav
+                    self.fc_at = time.monotonic()
+            except Exception:
+                with self.lock:
+                    self.fc_att = self.fc_grav = None
+            time.sleep(0.1)
+
+    def _fc_gravity(self):
+        """Cached airframe gravity direction, or None if stale/absent."""
+        with self.lock:
+            if self.fc_grav is None or time.monotonic() - self.fc_at > 1.0:
+                return None
+            return self.fc_grav.copy()
 
     def close(self):
         self._stop.set()
@@ -112,17 +165,25 @@ class Session:
         from companion.math_utils import q_to_euler
         rpy = [round(float(v), 1) for v in q_to_euler(q)]
 
+        pose = self._current_pose()
         with self.lock:
             covered = self._covered()
             pts = [[round(float(v), 3) for v in s] for s in self.samples[-1500:]]
             nsamp, mode = len(self.samples), self.mode
-            left = max(0.0, self.started + self.duration - time.monotonic()) \
-                if mode != "idle" else 0.0
+            now = time.monotonic()
+            if mode == "idle":
+                phase, left = "idle", 0.0
+            elif now < self.armed_at:
+                phase, left = "arming", max(0.0, self.armed_at - now)
+            else:
+                phase = "recording"
+                left = max(0.0, self.started + self.duration - now)
             result, error = self.result, self.error
 
         out = {
             "ok": True,
             "mode": mode,
+            "phase": phase,
             "seconds_left": round(left, 1),
             "samples": nsamp,
             "still": rate_dps < STILL_DPS,
@@ -132,6 +193,8 @@ class Session:
             "g_reported": round(float(np.linalg.norm(a)) / 9.80665, 3),
             "rpy": rpy,
             "covered": covered,
+            "pose": pose,
+            "frame": "airframe" if self._targets() is BODY_TARGETS else "sensor",
             "points": pts,
             "link": imu.stats(),
             "result": result,
@@ -140,35 +203,76 @@ class Session:
             "axis_verified": bool(self.cfg.imu32.verified),
             "config_path": self.cfg.source,
         }
-        if self.fc is not None:
-            try:
-                att = self.fc.attitude()
-                out["fc"] = {"roll": round(att["roll"], 1),
-                             "pitch": round(att["pitch"], 1)}
-            except Exception as e:
-                out["fc"] = {"error": str(e)}
+        with self.lock:
+            att = self.fc_att
+        if att is not None:
+            out["fc"] = {"roll": round(att["roll"], 1),
+                         "pitch": round(att["pitch"], 1)}
+        elif self.fc is not None:
+            out["fc"] = {"error": "no attitude from the FC"}
         return out
 
-    def _covered(self) -> dict:
-        """Which of the six directions have a sample inside their cap."""
-        got = {name: 0 for name, _ in TARGETS}
-        if not self.samples:
-            return got
-        S = np.array(self.samples)
+    def _targets(self):
+        # Keyed on whether the FC is TALKING, not on whether samples have been
+        # collected yet — otherwise the tiles are labelled by sensor axis
+        # during the countdown and rename themselves the moment recording
+        # starts, which reads as a glitch.
+        return BODY_TARGETS if self.fc_grav is not None else SENSOR_TARGETS
+
+    def _covered(self) -> list:
+        """How many samples landed in each named direction's cap.
+
+        Counts against the AIRFRAME directions whenever the FC is supplying
+        attitude, so the operator is told "nose up" rather than "sensor -X".
+        Falls back to the sensor's own axes when there is no FC, where nothing
+        can be named until step 2 has run.
+        """
+        targets = self._targets()
+        pool = self.body if targets is BODY_TARGETS else self.samples
+        out = [{"name": n, "hint": h, "count": 0} for n, _, h in targets]
+        if not pool:
+            return out
+        S = np.array(pool)
         thresh = math.cos(math.radians(CAP_DEG))
-        for name, t in TARGETS:
-            got[name] = int(np.count_nonzero(S @ np.array(t, float) > thresh))
-        return got
+        for row, (_, t, _) in zip(out, targets):
+            row["count"] = int(np.count_nonzero(S @ np.array(t, float) > thresh))
+        return out
+
+    def _current_pose(self):
+        """Which named direction the airframe is in right now, or None."""
+        v = self._fc_gravity()
+        if v is None:
+            imu = self.imu
+            a = imu._raw_accel.copy() if imu else None
+            if a is None or not a.any():
+                return None
+            v, targets = a / np.linalg.norm(a), SENSOR_TARGETS
+        else:
+            targets = BODY_TARGETS
+        thresh = math.cos(math.radians(CAP_DEG))
+        for name, t, _ in targets:
+            if float(np.dot(v, np.array(t, float))) > thresh:
+                return name
+        return None
 
     # ------------------------------------------------------------ collection
 
-    def begin(self, mode: str, seconds: float):
+    def begin(self, mode: str, seconds: float, lead_in: float = LEAD_IN_S):
+        """Arm, wait out the lead-in, then collect.
+
+        The lead-in is not decoration. Without it the clock starts the instant
+        the button is pressed, while the airframe is still on the bench and the
+        operator is still reaching for it — which is exactly what happened, and
+        looked from the outside like the button doing nothing at all.
+        """
         with self.lock:
             if self.mode != "idle":
                 raise RuntimeError("a collection is already running")
-            self.mode, self.samples, self.raw, self.pairs = mode, [], [], []
+            self.mode, self.samples, self.raw = mode, [], []
+            self.body, self.pairs = [], []
             self.result, self.error = None, None
-            self.started, self.duration = time.monotonic(), seconds
+            self.armed_at = time.monotonic() + lead_in
+            self.started, self.duration = self.armed_at, seconds
         threading.Thread(target=self._collect, name="calib", daemon=True).start()
 
     def cancel(self):
@@ -179,6 +283,11 @@ class Session:
         imu = self.imu
         bias = np.asarray(imu.gyro_bias, float)
         still_counts = STILL_DPS * GYRO_LSB_PER_DPS
+        while time.monotonic() < self.armed_at:
+            with self.lock:
+                if self.mode == "idle":
+                    return                      # cancelled during the lead-in
+            time.sleep(0.05)
         end = self.started + self.duration
         while time.monotonic() < end:
             with self.lock:
@@ -189,17 +298,17 @@ class Session:
             a = imu._raw_accel.copy()
             if a.any() and np.max(np.abs(g)) < still_counts:
                 unit = a / np.linalg.norm(a)
-                entry = None
-                if mode == "axis" and self.fc is not None:
-                    try:
-                        entry = (unit, _gravity_in_body_from_fc(self.fc.attitude()))
-                    except Exception:
-                        entry = None
+                # Recorded in BOTH modes: step 1 does not need the FC for its
+                # maths, but it does need the operator to know which way is
+                # "nose up", and only the FC can say that before step 2.
+                grav = self._fc_gravity()
                 with self.lock:
                     self.samples.append(unit)
                     self.raw.append(a)
-                    if entry is not None:
-                        self.pairs.append(entry)
+                    if grav is not None:
+                        self.body.append(grav)
+                        if mode == "axis":
+                            self.pairs.append((unit, grav))
             time.sleep(0.01 if mode == "accel" else 0.05)
         self._finish()
 
