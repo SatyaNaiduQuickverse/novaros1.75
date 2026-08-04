@@ -199,6 +199,21 @@ imu32:
   # the self-level module would have flown into. Same measurement, just
   # not rounded off. Re-orthogonalised to a true rotation (det +1).
   mount_matrix: [[+0.090992, +0.991600, +0.091925], [+0.995533, -0.092910, +0.016795], [+0.025194, +0.089986, -0.995624]]
+  # ✅ SIGNS VERIFIED 2026-08-05 by operator-labelled poses (calib UI, sign
+  # check). All six positions pass on BOTH sensors — the operator states what
+  # they are holding, so nothing is inferred:
+  #   Level        ESP -2.9/  4.3   FC -2.9/  3.5
+  #   Nose up      ESP 55.2/ 86.8   FC 41.2/ 86.8
+  #   Nose down    ESP -8.5/-81.7   FC-12.7/-81.7
+  #   Roll right   ESP 83.2/  1.7   FC 83.7/  1.8
+  #   Roll left    ESP-85.9/ -5.6   FC-85.6/ -5.3
+  #   Inverted     ESP-169.7/ 1.7   FC-168.8/ 1.9
+  # NB the roll figures disagree by 14 and 4 deg in the two nose-VERTICAL poses
+  # while pitch matches to the decimal. That is gimbal lock, not a fault: at
+  # 87 deg of pitch the Euler roll is ill-conditioned because the nose lies
+  # nearly along the axis roll is measured about. Both sensors describe the
+  # same physical attitude; the quaternion inside the filter is unaffected.
+  # Do not chase that number, and do not gate on it.
   kp: 2.0
   ki: 0.05
   verified: true
