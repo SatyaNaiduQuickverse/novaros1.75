@@ -113,6 +113,31 @@
     </div>
   </div>
 
+  <!-- ------------------------------------------------------------ model -->
+  <div class="panel" id="model" hidden>
+    <div class="lbl" style="margin-bottom:10px">Attitude, drawn
+      <span class="note">&mdash; tilt the real airframe and check these follow it</span></div>
+    <div class="row">
+      <div class="col" style="flex:1 1 300px">
+        <canvas id="cvEsp" width="440" height="300"></canvas>
+        <div style="margin-top:6px"><b>ESP32</b> &mdash; what the flight article will fly on
+          <div class="note" id="mEsp">&mdash;</div></div>
+      </div>
+      <div class="col" style="flex:1 1 300px">
+        <canvas id="cvFc" width="440" height="300"></canvas>
+        <div style="margin-top:6px"><b>Flight controller</b> &mdash; the independent reference
+          <div class="note" id="mFc">&mdash;</div></div>
+      </div>
+    </div>
+    <p class="note" style="margin:12px 0 0">
+      The red arm pair is the FRONT, and the red arrow is the nose &mdash; where
+      the camera looks. Yaw is forced to zero in both, because it is not
+      observable from gravity and the ESP32 has no magnetometer; only roll and
+      pitch mean anything here. If you tip the nose up and a drawing tips its
+      nose down, that is a sign error, and it will be obvious long before the
+      numbers give it away.</p>
+  </div>
+
   <!-- --------------------------------------------------------- progress -->
   <div class="panel" id="progress" hidden>
     <div class="row" style="align-items:flex-start">
@@ -264,7 +289,8 @@ $("#bConnect").onclick = async () => {
   b.disabled = false;
   if (!r.ok) { $("#connMsg").textContent = " " + (r.error || "failed"); return; }
   $("#connMsg").textContent = " connected";
-  for (const id of ["#live","#progress","#step1","#step2","#step3"]) $(id).hidden = false;
+  for (const id of ["#live","#model","#progress","#step1","#step2","#step3"])
+    $(id).hidden = false;
 };
 
 document.querySelectorAll("button.start").forEach(btn => {
@@ -307,6 +333,103 @@ function capsRender(covered, pose) {
     el.querySelector(".c").textContent = got ? "captured" : (c.count || "—");
   });
   return done;
+}
+
+// ---------------------------------------------------------------- 3D model
+// A wireframe quad drawn from scratch: no external library, so this works with
+// no network and cannot be broken by a CDN. Body frame is FRD — x forward,
+// y right, z DOWN — the same frame every calibration above is expressed in.
+const ARM = 0.78, MOT = 0.17;
+const MODEL = (() => {
+  const arms = [[1,1],[1,-1],[-1,1],[-1,-1]].map(([fx,fy]) => ({
+    from: [0,0,0], to: [fx*ARM, fy*ARM, 0], front: fx > 0 }));
+  const rings = arms.map(a => ({ c: a.to, r: MOT, front: a.front }));
+  const b = 0.3, h = 0.11;
+  const box = [[b,b,-h],[b,-b,-h],[-b,-b,-h],[-b,b,-h],
+               [b,b,h],[b,-b,h],[-b,-b,h],[-b,b,h]];
+  const boxEdges = [[0,1],[1,2],[2,3],[3,0],[4,5],[5,6],[6,7],[7,4],
+                    [0,4],[1,5],[2,6],[3,7]].map(([i,j]) => [box[i], box[j]]);
+  return {arms, rings, boxEdges};
+})();
+
+// Body -> world (NED). Yaw is deliberately zero: unobservable from gravity.
+function rotFromRP(rollDeg, pitchDeg) {
+  const r = rollDeg*Math.PI/180, p = pitchDeg*Math.PI/180;
+  const cr=Math.cos(r), sr=Math.sin(r), cp=Math.cos(p), sp=Math.sin(p);
+  return [[ cp,  sr*sp,  cr*sp],
+          [  0,     cr,    -sr],
+          [-sp,  sr*cp,  cr*cp]];
+}
+const apply = (R,v) => [R[0][0]*v[0]+R[0][1]*v[1]+R[0][2]*v[2],
+                        R[1][0]*v[0]+R[1][1]*v[1]+R[1][2]*v[2],
+                        R[2][0]*v[0]+R[2][1]*v[1]+R[2][2]*v[2]];
+
+// Orthographic 3/4 view. World is NED, so screen up is -z.
+const AZ = 38*Math.PI/180, EL = 24*Math.PI/180;
+function project(w, cx, cy, s) {
+  const X = w[1], Y = w[0], Z = -w[2];            // east, north, up
+  const sx = X*Math.cos(AZ) - Y*Math.sin(AZ);
+  const depth = X*Math.sin(AZ) + Y*Math.cos(AZ);
+  const sy = Z*Math.cos(EL) - depth*Math.sin(EL);
+  return [cx + s*sx, cy - s*sy, depth];
+}
+
+function drawDrone(canvasId, rollDeg, pitchDeg) {
+  const c = $(canvasId), g = c.getContext("2d");
+  const W = c.width, H = c.height, cx = W/2, cy = H/2 + 10, s = H*0.30;
+  const cs = getComputedStyle(document.body);
+  const dim = cs.getPropertyValue("--dim"), line = cs.getPropertyValue("--line");
+  const ink = cs.getPropertyValue("--ink"), acc = cs.getPropertyValue("--acc");
+  g.clearRect(0,0,W,H);
+
+  // ground grid, fixed in the world — the horizon to judge tilt against
+  g.strokeStyle = line; g.lineWidth = 1; g.globalAlpha = 0.7;
+  for (let i=-2; i<=2; i++) {
+    let a = project([i*0.8, -1.6, 0], cx, cy, s), b = project([i*0.8, 1.6, 0], cx, cy, s);
+    g.beginPath(); g.moveTo(a[0],a[1]); g.lineTo(b[0],b[1]); g.stroke();
+    a = project([-1.6, i*0.8, 0], cx, cy, s); b = project([1.6, i*0.8, 0], cx, cy, s);
+    g.beginPath(); g.moveTo(a[0],a[1]); g.lineTo(b[0],b[1]); g.stroke();
+  }
+  g.globalAlpha = 1;
+
+  const R = rotFromRP(rollDeg, pitchDeg);
+  const P = v => project(apply(R, v), cx, cy, s);
+
+  // body
+  g.strokeStyle = dim; g.lineWidth = 1.5;
+  for (const [a,b] of MODEL.boxEdges) {
+    const p = P(a), q = P(b);
+    g.beginPath(); g.moveTo(p[0],p[1]); g.lineTo(q[0],q[1]); g.stroke();
+  }
+  // arms + motors, front pair red
+  for (let i=0; i<MODEL.arms.length; i++) {
+    const a = MODEL.arms[i];
+    g.strokeStyle = a.front ? "#f85149" : ink;
+    g.lineWidth = 3;
+    const p = P(a.from), q = P(a.to);
+    g.beginPath(); g.moveTo(p[0],p[1]); g.lineTo(q[0],q[1]); g.stroke();
+    g.lineWidth = 2;
+    g.beginPath();
+    for (let k=0; k<=24; k++) {
+      const t = k/24*Math.PI*2;
+      const pt = P([a.to[0]+MOT*Math.cos(t), a.to[1]+MOT*Math.sin(t), a.to[2]]);
+      k ? g.lineTo(pt[0],pt[1]) : g.moveTo(pt[0],pt[1]);
+    }
+    g.stroke();
+  }
+  // nose arrow — where the camera looks
+  g.strokeStyle = "#f85149"; g.lineWidth = 3;
+  const n0 = P([0.35,0,0]), n1 = P([1.35,0,0]);
+  g.beginPath(); g.moveTo(n0[0],n0[1]); g.lineTo(n1[0],n1[1]); g.stroke();
+  g.fillStyle = "#f85149";
+  const h1 = P([1.05,0.14,0]), h2 = P([1.05,-0.14,0]);
+  g.beginPath(); g.moveTo(n1[0],n1[1]); g.lineTo(h1[0],h1[1]);
+  g.lineTo(h2[0],h2[1]); g.closePath(); g.fill();
+  // "up" mast, so an inversion is unmistakable
+  g.strokeStyle = acc; g.lineWidth = 2;
+  const u0 = P([0,0,0]), u1 = P([0,0,-0.75]);
+  g.beginPath(); g.moveTo(u0[0],u0[1]); g.lineTo(u1[0],u1[1]); g.stroke();
+  g.beginPath(); g.arc(u1[0],u1[1],4,0,6.3); g.fill? g.stroke():0;
 }
 
 function drawSphere(pts) {
@@ -402,6 +525,13 @@ async function tick() {
   $("#rpy").textContent = s.rpy.map(v=>v.toFixed(0)+"°").join("  ");
   $("#fcline").textContent = s.fc && !s.fc.error
     ? `FC says roll ${s.fc.roll}°  pitch ${s.fc.pitch}°` : "";
+
+  drawDrone("#cvEsp", s.rpy[0], s.rpy[1]);
+  $("#mEsp").textContent = `roll ${s.rpy[0].toFixed(1)}°   pitch ${s.rpy[1].toFixed(1)}°`;
+  if (s.fc && !s.fc.error) {
+    drawDrone("#cvFc", s.fc.roll, s.fc.pitch);
+    $("#mFc").textContent = `roll ${s.fc.roll.toFixed(1)}°   pitch ${s.fc.pitch.toFixed(1)}°`;
+  }
 
   const done = capsRender(s.covered || [], s.pose);
   $("#capCount").textContent = ` ${done} of 6`
