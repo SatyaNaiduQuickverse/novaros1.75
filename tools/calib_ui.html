@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IMU calibration</title>
+<style>
+  :root {
+    --bg:#0e1116; --panel:#161b22; --line:#2a313c; --ink:#e6edf3; --dim:#8b949e;
+    --ok:#3fb950; --warn:#d29922; --bad:#f85149; --acc:#58a6ff;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg:#f6f8fa; --panel:#fff; --line:#d5dae0; --ink:#1f2328; --dim:#636c76; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.5
+         ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif; }
+  .wrap { max-width:1100px; margin:0 auto; padding:20px 16px 60px; }
+  h1 { font-size:1.35rem; margin:0 0 2px; }
+  .sub { color:var(--dim); margin:0 0 20px; font-size:.9rem; }
+  .panel { background:var(--panel); border:1px solid var(--line);
+           border-radius:10px; padding:16px; margin-bottom:14px; }
+  .row { display:flex; gap:14px; flex-wrap:wrap; }
+  .col { flex:1 1 320px; min-width:0; }
+  button { font:inherit; font-weight:600; padding:10px 18px; border-radius:8px;
+           border:1px solid var(--line); background:var(--acc); color:#04121f;
+           cursor:pointer; }
+  button.ghost { background:transparent; color:var(--ink); }
+  button:disabled { opacity:.4; cursor:not-allowed; }
+  .big { font-variant-numeric:tabular-nums; font-size:2.2rem; font-weight:700;
+         line-height:1.1; }
+  .lbl { color:var(--dim); font-size:.78rem; text-transform:uppercase;
+         letter-spacing:.06em; }
+  .grid6 { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }
+  .cap { border:1px solid var(--line); border-radius:8px; padding:12px 10px;
+         text-align:center; transition:background .15s,border-color .15s; }
+  .cap .n { font-weight:700; font-size:1.05rem; }
+  .cap .c { color:var(--dim); font-size:.78rem; font-variant-numeric:tabular-nums; }
+  .cap.done { border-color:var(--ok); background:color-mix(in srgb,var(--ok) 16%,transparent); }
+  .cap.done .c { color:var(--ok); }
+  .pill { display:inline-block; padding:3px 10px; border-radius:999px;
+          font-size:.8rem; font-weight:600; }
+  .pill.ok { background:color-mix(in srgb,var(--ok) 22%,transparent); color:var(--ok); }
+  .pill.bad{ background:color-mix(in srgb,var(--bad) 22%,transparent); color:var(--bad); }
+  .pill.warn{background:color-mix(in srgb,var(--warn) 22%,transparent); color:var(--warn);}
+  canvas { width:100%; height:auto; display:block; background:var(--bg);
+           border:1px solid var(--line); border-radius:8px; }
+  pre { background:var(--bg); border:1px solid var(--line); border-radius:8px;
+        padding:12px; overflow-x:auto; font-size:.85rem; margin:10px 0 0; }
+  table { width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums; }
+  td { padding:4px 0; } td:last-child { text-align:right; font-weight:600; }
+  .note { color:var(--dim); font-size:.86rem; }
+  .step { display:flex; align-items:center; gap:10px; margin-bottom:10px; }
+  .step .num { width:26px; height:26px; border-radius:50%; flex:none;
+               display:grid; place-items:center; font-size:.8rem; font-weight:700;
+               border:1px solid var(--line); }
+  .step.on .num { background:var(--acc); color:#04121f; border-color:var(--acc); }
+  .step.done .num { background:var(--ok); color:#04121f; border-color:var(--ok); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>IMU calibration</h1>
+  <p class="sub">Props off. This never streams RC and never arms &mdash; it only reads.</p>
+
+  <div class="panel" id="setup">
+    <div class="step on"><span class="num">1</span><b>Connect</b></div>
+    <p class="note" style="margin:0 0 12px">
+      Check the USB cables first. You will be turning the airframe fully over, and
+      both the flight controller and the ESP32 are tethered to the Pi. Make sure
+      there is slack and nothing will pull out mid-run.</p>
+    <button id="bConnect">Connect to hardware</button>
+    <span id="connMsg" class="note"></span>
+  </div>
+
+  <div class="panel" id="live" hidden>
+    <div class="row">
+      <div class="col">
+        <div class="lbl">Gravity reads</div>
+        <div class="big" id="gval">&mdash;</div>
+        <div class="note" id="gnote">should be 1.000 g in every orientation</div>
+      </div>
+      <div class="col">
+        <div class="lbl">Movement</div>
+        <div class="big" id="still">&mdash;</div>
+        <div class="note">samples only count while held still</div>
+      </div>
+      <div class="col">
+        <div class="lbl">Attitude (roll / pitch / yaw)</div>
+        <div class="big" id="rpy" style="font-size:1.5rem">&mdash;</div>
+        <div class="note" id="fcline"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel" id="run" hidden>
+    <div class="step on"><span class="num" id="stepNum">2</span><b id="stepName">Accelerometer offset &amp; scale</b></div>
+    <p class="note" id="stepHelp"></p>
+
+    <div class="row" style="align-items:flex-start">
+      <div class="col">
+        <div class="lbl" style="margin-bottom:8px">Directions captured
+          <span id="capCount" class="note"></span></div>
+        <div class="grid6" id="caps"></div>
+        <p class="note" style="margin:12px 0 0">
+          Turn the airframe so each face points down in turn, pausing about a
+          second each time. Order and precision do not matter &mdash; only that
+          every tile turns green.</p>
+      </div>
+      <div class="col">
+        <div class="lbl" style="margin-bottom:8px">Coverage</div>
+        <canvas id="sphere" width="440" height="220"></canvas>
+        <p class="note" style="margin:8px 0 0">
+          Each dot is a captured direction, seen from the front (left) and from
+          above (right). Gaps are the orientations still missing.</p>
+      </div>
+    </div>
+
+    <div style="margin-top:16px; display:flex; gap:10px; align-items:center; flex-wrap:wrap">
+      <button id="bStart">Start &mdash; 10s to pick it up</button>
+      <button id="bCancel" class="ghost" hidden>Cancel</button>
+      <span class="big" id="clock" style="font-size:1.4rem"></span>
+      <span class="note" id="sampCount"></span>
+    </div>
+  </div>
+
+  <div class="panel" id="result" hidden></div>
+
+  <div class="panel">
+    <div class="lbl" style="margin-bottom:10px">Sequence</div>
+    <div class="step" id="s1"><span class="num">1</span>Accelerometer offset &amp; scale &mdash; removes the ~10&deg; error in &ldquo;down&rdquo;</div>
+    <div class="step" id="s2"><span class="num">2</span>Axis map vs the flight controller &mdash; which body axis is which, and the signs</div>
+    <div class="step" id="s3"><span class="num">3</span>Independent check &mdash; level reads 0&deg;/0&deg;, tilts track, correction opposes</div>
+    <p class="note" style="margin:6px 0 0">Both calibrations are needed and they
+      fix different things. Step 1 first: step 2 picks each axis from the largest
+      raw component, and the offset step 1 removes is easily large enough to
+      mis-call a shallow tilt.</p>
+  </div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const NAMES = ["+X","-X","+Y","-Y","+Z","-Z"];
+let mode = "accel", running = false, lastResult = null, connected = false;
+
+function capsInit() {
+  $("#caps").innerHTML = NAMES.map(n =>
+    `<div class="cap" id="cap${n}"><div class="n">${n}</div><div class="c">0</div></div>`
+  ).join("");
+}
+capsInit();
+
+async function post(path, body) {
+  const r = await fetch(path, {method:"POST", headers:{"Content-Type":"application/json"},
+                              body: JSON.stringify(body||{})});
+  return r.json();
+}
+
+$("#bConnect").onclick = async () => {
+  $("#bConnect").disabled = true;
+  $("#connMsg").textContent = " connecting (the bridge is rebooted into an open port, ~3s) ...";
+  const r = await post("/api/connect", {fc:true});
+  $("#bConnect").disabled = false;
+  if (!r.ok) { $("#connMsg").textContent = " " + (r.error||"failed"); return; }
+  connected = true;
+  $("#connMsg").textContent = " connected";
+  $("#live").hidden = false; $("#run").hidden = false;
+};
+
+$("#bStart").onclick = async () => {
+  const secs = mode === "accel" ? 90 : 60;
+  const r = await post("/api/start", {mode, seconds: secs});
+  if (!r.ok) { alert(r.error || "could not start"); return; }
+  $("#result").hidden = true;
+};
+$("#bCancel").onclick = () => post("/api/cancel");
+
+function drawSphere(pts) {
+  const c = $("#sphere"), g = c.getContext("2d");
+  const W = c.width, H = c.height, R = H/2 - 12;
+  g.clearRect(0,0,W,H);
+  [[W*0.25,"front"],[W*0.75,"top"]].forEach(([cx,label]) => {
+    g.strokeStyle = getComputedStyle(document.body).getPropertyValue("--line");
+    g.lineWidth = 1;
+    g.beginPath(); g.arc(cx, H/2, R, 0, Math.PI*2); g.stroke();
+    g.beginPath(); g.moveTo(cx-R,H/2); g.lineTo(cx+R,H/2);
+    g.moveTo(cx,H/2-R); g.lineTo(cx,H/2+R); g.stroke();
+    g.fillStyle = getComputedStyle(document.body).getPropertyValue("--dim");
+    g.font = "11px system-ui"; g.textAlign = "center";
+    g.fillText(label, cx, H-2);
+  });
+  g.fillStyle = getComputedStyle(document.body).getPropertyValue("--acc");
+  for (const p of pts) {
+    g.globalAlpha = 0.55;
+    g.beginPath(); g.arc(W*0.25 + p[0]*R, H/2 - p[2]*R, 2, 0, 6.3); g.fill();
+    g.beginPath(); g.arc(W*0.75 + p[0]*R, H/2 - p[1]*R, 2, 0, 6.3); g.fill();
+  }
+  g.globalAlpha = 1;
+}
+
+function showResult(r) {
+  const el = $("#result"); el.hidden = false;
+  const good = r.good;
+  let html = `<div class="lbl" style="margin-bottom:8px">Result
+      <span class="pill ${good?'ok':'bad'}">${good?'usable':'not good enough'}</span></div>`;
+  if (r.kind === "accel") {
+    html += `<table>
+      <tr><td>still samples</td><td>${r.samples}</td></tr>
+      <tr><td>fit residual</td><td>${r.residual_pct}% of 1 g</td></tr>
+      <tr><td>largest offset was worth</td><td>${r.false_tilt_deg}&deg; of false tilt</td></tr>
+      <tr><td>offset (counts)</td><td>${r.accel_offset.join(", ")}</td></tr>
+      <tr><td>scale (counts/g)</td><td>${r.accel_per_g_axis.join(", ")}</td></tr></table>`;
+    if (!good) html += `<p class="note">Residual over 2% means some samples were
+      not actually at rest. Re-run, moving more slowly and pausing longer.</p>`;
+  } else {
+    html += `<table>
+      <tr><td>paired samples</td><td>${r.samples}</td></tr>
+      <tr><td>disagreement with the FC</td><td>${r.residual_deg}&deg;</td></tr>
+      <tr><td>snap confidence</td><td>${r.confidence} (1.0 = square mounting)</td></tr>
+      <tr><td>axis map</td><td>${r.axis_map.map(a=>`[${a[0]}, ${a[1]>0?'+1':'-1'}]`).join(" ")}</td></tr>
+      </table><pre>${r.matrix.map(row=>"[ "+row.map(v=>v>=0?" "+v.toFixed(3):v.toFixed(3)).join("  ")+" ]").join("\n")}</pre>`;
+    if (!good) html += `<p class="note">The two sensors do not agree well enough.
+      Either the ESP32 is not rigidly mounted to the airframe, step 1 has not been
+      run, or the FC's own accelerometer needs calibrating in Betaflight.</p>`;
+  }
+  html += `<div style="margin-top:14px; display:flex; gap:10px">
+      <button id="bApply" ${good?'':'disabled'}>Write to vehicle.yaml</button>
+      <button id="bRedo" class="ghost">Run again</button></div>
+      <span id="applyMsg" class="note"></span>`;
+  el.innerHTML = html;
+  $("#bRedo").onclick = () => { el.hidden = true; };
+  const ap = $("#bApply");
+  if (ap) ap.onclick = async () => {
+    ap.disabled = true;
+    const res = await post("/api/apply", {});
+    $("#applyMsg").textContent = res.ok
+      ? "  written (previous file kept as " + res.backup + ")"
+      : "  " + (res.error || "failed");
+    if (res.ok && r.kind === "accel") setMode("axis");
+  };
+}
+
+function setMode(m) {
+  mode = m;
+  const accel = m === "accel";
+  $("#stepNum").textContent = accel ? "2" : "3";
+  $("#stepName").textContent = accel
+    ? "Accelerometer offset & scale" : "Axis map, against the flight controller";
+  $("#stepHelp").textContent = accel
+    ? "90 seconds. Tumble the airframe so gravity visits every face. This finds the per-axis zero error that tilts which way the sensor thinks is down."
+    : "60 seconds. Tumble it again, the same way. The flight controller is a second IMU on the same airframe, so comparing the two recovers how the ESP32 is mounted — no named poses needed.";
+  $("#bStart").textContent = accel
+    ? "Start step 1 — 10s to pick it up" : "Start step 2 — 10s to pick it up";
+}
+setMode("accel");
+
+async function tick() {
+  let s;
+  try { s = await (await fetch("/api/state")).json(); }
+  catch { setTimeout(tick, 500); return; }
+  if (!s.ok) { setTimeout(tick, 400); return; }
+
+  $("#gval").textContent = s.g_reported.toFixed(3) + " g";
+  const off = Math.abs(s.g_reported - 1) > 0.02;
+  $("#gval").style.color = off ? "var(--warn)" : "var(--ok)";
+  $("#gnote").textContent = off
+    ? "off by " + Math.round(Math.abs(s.g_reported-1)*100) + "% — this is what step 1 fixes"
+    : "correct in this orientation";
+  $("#still").innerHTML = s.still
+    ? '<span class="pill ok">still</span>' : '<span class="pill warn">moving</span>';
+  $("#rpy").textContent = s.rpy.map(v=>v.toFixed(0)+"°").join("  ");
+  $("#fcline").textContent = s.fc && !s.fc.error
+    ? `FC says roll ${s.fc.roll}°  pitch ${s.fc.pitch}°` : "";
+
+  let done = 0;
+  for (const n of NAMES) {
+    const el = $("#cap"+n), c = s.covered[n] || 0;
+    el.classList.toggle("done", c >= 20);
+    if (c >= 20) done++;
+    el.querySelector(".c").textContent = c;
+  }
+  $("#capCount").textContent = ` ${done} of 6`;
+  drawSphere(s.points || []);
+
+  running = s.mode !== "idle";
+  $("#bStart").disabled = running;
+  $("#bCancel").hidden = !running;
+  $("#clock").textContent = running ? s.seconds_left.toFixed(0) + "s" : "";
+  $("#sampCount").textContent = running ? `${s.samples} still samples` : "";
+
+  $("#s1").className = "step" + (s.calibrated ? " done" : mode==="accel" ? " on" : "");
+  $("#s2").className = "step" + (s.axis_verified ? " done" : mode==="axis" ? " on" : "");
+
+  if (s.result && s.result !== lastResult) { lastResult = s.result; showResult(s.result); }
+  if (s.error) { $("#result").hidden = false;
+    $("#result").innerHTML = `<span class="pill bad">could not fit</span>
+      <p class="note">${s.error}</p>`; }
+  setTimeout(tick, running ? 120 : 350);
+}
+tick();
+</script>
+</body>
+</html>

@@ -47,6 +47,11 @@ loop:      ; $(BRINGUP) loop
 loop-fake:
 	$(BRINGUP) loop --fake-imu --fake-vision --no-fc
 
+# Interactive IMU calibration in a browser. Shows which orientations are still
+# missing while you turn the airframe, instead of only telling you at the end.
+calib-ui:
+	python3 -m tools.calib_server
+
 clean:
 	rm -rf $(VENV) **/__pycache__ .pytest_cache
 	find . -name '__pycache__' -type d -exec rm -rf {} +

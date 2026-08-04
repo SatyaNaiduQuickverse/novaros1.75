@@ -210,9 +210,18 @@ accel = self._to_body((raw_a - self.accel_offset) * (G / self.accel_scale))
 ### Measuring it: tumble, not six flat faces
 
 ```bash
-python3 -m tools.bringup imu32 --accel-cal              # tumble (default)
+make calib-ui                                           # browser UI, recommended
+python3 -m tools.bringup imu32 --accel-cal              # same thing, CLI
 python3 -m tools.bringup imu32 --accel-cal --poses      # six flat faces
 ```
+
+**Prefer the UI.** The CLI asks the operator to turn the airframe for ninety
+seconds and only reports at the end whether the coverage was sufficient — two
+runs were wasted that way on an airframe nobody had picked up. The UI shows
+live which of the six directions are still missing, whether the airframe is
+currently still enough for a sample to count, and a plot of what has been
+collected so gaps are visible rather than inferred. It serves from the Pi
+because it has to hold the serial ports open; a sandboxed page cannot.
 
 Six-face calibration assumes you can rest the thing squarely on each face. The
 IMU is bolted into an airframe; you cannot. So the default fits an **ellipsoid**
