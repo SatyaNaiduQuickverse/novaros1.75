@@ -246,6 +246,7 @@ class Session:
             a = imu._raw_accel.copy() if imu else None
             if a is None or not a.any():
                 return None
+            a = imu.sensor_accel()
             v, targets = a / np.linalg.norm(a), SENSOR_TARGETS
         else:
             targets = BODY_TARGETS
@@ -297,7 +298,13 @@ class Session:
             g = imu._raw_gyro.copy() - bias
             a = imu._raw_accel.copy()
             if a.any() and np.max(np.abs(g)) < still_counts:
-                unit = a / np.linalg.norm(a)
+                # Directions come from the CALIBRATED vector: the 316-count
+                # zero offset on this part is 8.8 deg of systematic tilt, which
+                # would be baked into every axis-map pair. The ellipsoid fit
+                # below still gets the raw counts, since finding that offset is
+                # what it does.
+                cal_a = imu.sensor_accel()
+                unit = cal_a / np.linalg.norm(cal_a)
                 # Recorded in BOTH modes: step 1 does not need the FC for its
                 # maths, but it does need the operator to know which way is
                 # "nose up", and only the FC can say that before step 2.
@@ -485,6 +492,11 @@ class Handler(BaseHTTPRequestHandler):
                     raise RuntimeError("no result to apply")
                 backup = apply_to_yaml(s.cfg.source or DEFAULT_CONFIG, vals)
                 s.cfg = load()
+                # Adopt it immediately. Without this the reader keeps the old
+                # numbers, the live readout stays wrong, and step 2 would run
+                # on uncorrected data — silently undoing step 1.
+                if s.imu is not None:
+                    s.imu.apply_cal(s.cfg.imu32)
                 return self._send(200, json.dumps({"ok": True, "backup": backup}))
         except Exception as e:
             return self._send(200, json.dumps({"ok": False, "error": str(e)}))

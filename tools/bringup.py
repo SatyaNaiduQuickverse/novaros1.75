@@ -993,8 +993,7 @@ def _imu32_axis_map_fc(imu, cfg, seconds=60.0):
         while time.time() < stop:
             g = imu._raw_gyro.copy() - bias
             if np.max(np.abs(g)) < still:
-                _, _, a_body = imu.get_state()      # calibrated, axis map applied
-                a_sensor = imu._raw_accel.copy()
+                a_sensor = imu.sensor_accel()       # offset/scale removed
                 if np.linalg.norm(a_sensor) > 1:
                     try:
                         v_fc = _gravity_in_body_from_fc(fc.attitude())

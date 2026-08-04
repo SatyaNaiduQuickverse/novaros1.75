@@ -457,6 +457,36 @@ class ESP32IMU:
         with self._lock:
             return self._q.copy(), self._w.copy(), self._a.copy()
 
+    def sensor_accel(self):
+        """Accel with offset and scale removed, still in the SENSOR frame.
+
+        Anything reasoning about which DIRECTION gravity is in must use this,
+        not ``_raw_accel``. On this part the zero offset is 316 counts on one
+        axis — 8.8 deg of systematic tilt on every sample, which is enough to
+        fail an axis-map fit outright. Only the ellipsoid fit itself wants the
+        raw counts, because solving for that offset is its whole job.
+        """
+        with self._lock:
+            raw = self._raw_accel.copy()
+        return (raw - self.accel_offset) / self.accel_scale
+
+    def apply_cal(self, cal) -> None:
+        """Adopt a freshly measured calibration without reconnecting.
+
+        The calibration UI writes results mid-session, and a reader still
+        holding the old numbers would show a stale attitude and hand the NEXT
+        calibration step uncorrected data — which is exactly the dependency
+        that makes step 1 a prerequisite for step 2.
+        """
+        self.gyro_bias = np.asarray(getattr(cal, "gyro_bias", [0, 0, 0]), float)
+        self.accel_per_g = float(getattr(cal, "accel_per_g", ACCEL_LSB_PER_G))
+        self.accel_offset = np.asarray(
+            getattr(cal, "accel_offset", [0.0, 0.0, 0.0]), float)
+        self.axis_map = tuple(getattr(cal, "axis_map", self.axis_map))
+        per_axis = tuple(getattr(cal, "accel_per_g_axis", ()) or ())
+        self.accel_scale = (np.asarray(per_axis, float) if len(per_axis) == 3
+                            else np.full(3, self.accel_per_g))
+
     def stale(self) -> bool:
         return (time.monotonic() - self._last_t) > self.stale_after_s
 

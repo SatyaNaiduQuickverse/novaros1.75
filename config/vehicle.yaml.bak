@@ -152,7 +152,7 @@ imu32:
   #     python3 -m tools.bringup imu32 --accel-cal      (six poses)
   # accel_offset: [0.0, 0.0, 0.0]
   # accel_per_g_axis: [0.0, 0.0, 0.0]
-  accel_per_g: 2061.3
+  accel_per_g: 2077.5
   # UNVERIFIED — sensor frame to airframe FRD. Identity until the board's
   # mounting is known; needs level + tilts. Run: bringup imu32 --calibrate
   axis_map:
@@ -162,17 +162,6 @@ imu32:
   kp: 2.0
   ki: 0.05
   verified: false
-  # ✅ MEASURED 2026-08-04 with the ellipsoid tumble fit (calib UI, step 1).
-  # This settles the 2400-vs-2000 question completely, and the answer is the
-  # one that mattered: the SCALES are essentially perfect (2048.0 / 2047.6 /
-  # 2088.3 against a nominal 2048), so nothing was wrong with the sensitivity.
-  # The whole fault was a zero-g OFFSET of +316.4 counts on sensor z = 0.154 g,
-  # worth 8.8 deg of false tilt in the gravity DIRECTION — which is the only
-  # thing Mahony can see, since it normalises the vector.
-  # Verified independently right after applying: reported gravity went from
-  # 1.156 g to 1.003 g in the same orientation.
-  accel_offset: [-7.0, 19.4, 316.4]
-  accel_per_g_axis: [2048.0, 2047.6, 2088.3]
 
 # --- compiled command module ----------------------------------------------
 # Delivered 2026-08-04, accepted after tools/verify_module_delivery.py.
