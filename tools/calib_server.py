@@ -321,18 +321,29 @@ class Session:
             try:
                 cmd = self.probe.step()
                 tilt = math.hypot(rpy[0], rpy[1])
-                verdict = None
-                if att is not None and abs(rpy[0]) > 8:
-                    # The delivered module was accepted on this rule: a positive
-                    # roll (right side down) must pull the roll channel below
-                    # centre. Anything else drives INTO the tilt.
-                    opposes = (cmd.get("roll", 1500) - 1500) * rpy[0] < 0
-                    verdict = "opposes" if opposes else "DRIVES INTO THE TILT"
+                # The delivered module was accepted on this rule for ROLL: a
+                # positive roll (right side down) must pull the roll channel
+                # below centre. Anything else drives INTO the tilt. Pitch is
+                # judged the same way for self-consistency — but see below,
+                # that is a weaker claim.
+                def judge(angle, chan):
+                    if abs(angle) <= 8:
+                        return None
+                    return "opposes" if (cmd.get(chan, 1500) - 1500) * angle < 0 \
+                        else "DRIVES INTO THE TILT"
+                v_roll, v_pitch = judge(rpy[0], "roll"), judge(rpy[1], "pitch")
+                verdict = next((v for v in (v_roll, v_pitch)
+                                if v == "DRIVES INTO THE TILT"), None) \
+                    or next((v for v in (v_roll, v_pitch) if v), None)
                 out["selflevel"] = {
                     "roll": cmd.get("roll"), "pitch": cmd.get("pitch"),
                     "yaw": cmd.get("yaw"), "throttle": cmd.get("throttle"),
                     "tilt_deg": round(tilt, 1),
+                    "roll_deg": round(float(rpy[0]), 1),
+                    "pitch_deg": round(float(rpy[1]), 1),
                     "verdict": verdict,
+                    "verdict_roll": v_roll,
+                    "verdict_pitch": v_pitch,
                     "sent_to_fc": self.probe.spy.calls,
                     "arm_attempts": self.probe.spy.arm_attempts,
                 }

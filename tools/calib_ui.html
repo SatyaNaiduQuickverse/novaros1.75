@@ -219,12 +219,20 @@
           it commands.</p>
         <div id="slBox" hidden>
           <table>
-            <tr><td>tilt now</td><td id="slTilt">&mdash;</td></tr>
-            <tr><td>commands roll</td><td id="slRoll">&mdash;</td></tr>
-            <tr><td>commands pitch</td><td id="slPitch">&mdash;</td></tr>
-            <tr><td>bytes sent to the FC</td><td id="slSent">0</td></tr>
+            <tr><td>rolled</td><td id="slRollDeg">&mdash;</td></tr>
+            <tr><td>&nbsp;&nbsp;commands roll</td><td id="slRoll">&mdash;</td></tr>
+            <tr><td>&nbsp;&nbsp;verdict</td><td id="slVR">&mdash;</td></tr>
+            <tr><td>pitched</td><td id="slPitchDeg">&mdash;</td></tr>
+            <tr><td>&nbsp;&nbsp;commands pitch</td><td id="slPitch">&mdash;</td></tr>
+            <tr><td>&nbsp;&nbsp;verdict</td><td id="slVP">&mdash;</td></tr>
+            <tr><td>commands sent to the FC</td><td id="slSent">0</td></tr>
           </table>
           <div style="margin-top:10px" id="slVerdict"></div>
+          <p class="note" style="margin:10px 0 0">
+            Roll is the verified rule &mdash; it is what the delivered binary was
+            accepted against. Pitch is judged the same way for self-consistency;
+            that the stick direction actually pitches THIS airframe the right way
+            is confirmed in the armed run, not here.</p>
         </div>
         <p class="note" id="slErr" style="margin:0"></p>
         <div style="margin-top:12px">
@@ -442,10 +450,19 @@ async function tick() {
   $("#slBox").hidden = !(sl && !sl.error);
   $("#slErr").textContent = sl && sl.error ? sl.error : "";
   if (sl && !sl.error) {
-    $("#slTilt").textContent = sl.tilt_deg + "°";
+    const pill = v => v === null ? '<span class="note">tilt past 8°</span>'
+      : v === "opposes" ? '<span class="pill ok">opposes</span>'
+      : '<span class="pill bad">' + v + '</span>';
+    $("#slRollDeg").textContent = sl.roll_deg + "°"
+      + (sl.roll_deg > 1 ? "  right down" : sl.roll_deg < -1 ? "  left down" : "");
+    $("#slPitchDeg").textContent = sl.pitch_deg + "°"
+      + (sl.pitch_deg > 1 ? "  nose up" : sl.pitch_deg < -1 ? "  nose down" : "");
     $("#slRoll").textContent = sl.roll == null ? "—"
-      : sl.roll + (sl.roll > 1500 ? "  (right)" : sl.roll < 1500 ? "  (left)" : "");
-    $("#slPitch").textContent = sl.pitch == null ? "—" : sl.pitch;
+      : sl.roll + (sl.roll > 1500 ? "  (push right)" : sl.roll < 1500 ? "  (push left)" : "");
+    $("#slPitch").textContent = sl.pitch == null ? "—"
+      : sl.pitch + (sl.pitch > 1500 ? "  (push up)" : sl.pitch < 1500 ? "  (push down)" : "");
+    $("#slVR").innerHTML = pill(sl.verdict_roll);
+    $("#slVP").innerHTML = pill(sl.verdict_pitch);
     $("#slSent").textContent = sl.sent_to_fc + " — to a stand-in, never the FC"
       + (sl.arm_attempts ? "  ⚠ TRIED TO ARM " + sl.arm_attempts + "×" : "");
     $("#slVerdict").innerHTML = sl.verdict === null
