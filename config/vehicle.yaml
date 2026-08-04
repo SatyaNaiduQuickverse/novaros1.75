@@ -96,8 +96,24 @@ imu:
     - [0, +1.0]
     - [1, -1.0]
     - [2, -1.0]
+  # ✅ pitch_sign MEASURED 2026-08-05, and it is NOT the textbook sign.
+  # Front of the aircraft pointed at the ceiling, held to 0.1 deg of spread:
+  # this firmware reported pitch = -88.2. So Betaflight is positive NOSE DOWN
+  # here, where the standard ZYX euler decode assumes positive nose up.
+  # Corroborated at rest: level-ish it read pitch +2.7 (i.e. nose down 2.7 by
+  # the real convention) and its own accelerometer put "up" at x = -0.047,
+  # exactly where nose-down 2.7 predicts. Both agree, which also clears the
+  # board_to_frd decode of suspicion — only the pitch sign was wrong.
+  # This single flipped sign accounted for a 45 deg residual in the ESP32 axis
+  # map: every pair had its x component inverted, which no rotation can
+  # reconcile, so the fit refused. Measure attitude signs, never assume them.
+  # roll_sign MEASURED the same way and it IS the textbook sign: right side
+  # down, nose level, held to 0.0 deg of spread -> roll +51.0. Do not infer
+  # one sign from the other; pitch was non-standard here and roll was not.
   roll_sign: +1.0
-  pitch_sign: +1.0
+  pitch_sign: -1.0
+  # yaw_sign is still UNVERIFIED. It cannot be measured from gravity at all, so
+  # neither this rig nor the ESP32 (which has no magnetometer) can settle it.
   yaw_sign: +1.0
   verified: false
 
