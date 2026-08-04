@@ -183,6 +183,57 @@
     </div>
   </div>
 
+  <!-- ----------------------------------------------------------- step 3 -->
+  <div class="panel" id="step3" hidden>
+    <h2><span class="num" id="n3">3</span>Verify &mdash; independently
+      <span id="p3"></span></h2>
+    <p class="note" style="margin:10px 0 14px">
+      Nothing above can certify itself: the attitude is derived from the very
+      sensor being calibrated. These two checks use a second, independent
+      sensor and your own hands.</p>
+
+    <div class="row">
+      <!-- 3a: does it track a MOVING airframe -->
+      <div class="col" style="border:1px solid var(--line); border-radius:8px; padding:14px">
+        <div class="lbl">3a &mdash; does it track the real airframe</div>
+        <table style="margin:10px 0">
+          <tr><td>roll &nbsp;ESP32 vs FC</td><td id="agRoll">&mdash;</td></tr>
+          <tr><td>pitch ESP32 vs FC</td><td id="agPitch">&mdash;</td></tr>
+        </table>
+        <p class="note" style="margin:0 0 12px">
+          Agreeing at rest proves only the static calibration. Press start, then
+          tilt it through 40&deg; or so in both axes &mdash; a wrong sign
+          downstream still looks perfect at zero tilt and diverges the moment
+          the airframe moves.</p>
+        <button class="start" data-mode="track" data-secs="30">
+          Start 3a &mdash; 10s, then tilt it around</button>
+      </div>
+
+      <!-- 3b: does the correction OPPOSE the tilt -->
+      <div class="col" style="border:1px solid var(--line); border-radius:8px; padding:14px">
+        <div class="lbl">3b &mdash; does the correction oppose the tilt</div>
+        <p class="note" style="margin:8px 0 12px">
+          Runs the real compiled module against the live IMU. Its output goes to
+          a stand-in, so <b>nothing reaches the flight controller</b> &mdash; no
+          RC is streamed and it cannot arm. Tilt the airframe and watch which way
+          it commands.</p>
+        <div id="slBox" hidden>
+          <table>
+            <tr><td>tilt now</td><td id="slTilt">&mdash;</td></tr>
+            <tr><td>commands roll</td><td id="slRoll">&mdash;</td></tr>
+            <tr><td>commands pitch</td><td id="slPitch">&mdash;</td></tr>
+            <tr><td>bytes sent to the FC</td><td id="slSent">0</td></tr>
+          </table>
+          <div style="margin-top:10px" id="slVerdict"></div>
+        </div>
+        <p class="note" id="slErr" style="margin:0"></p>
+        <div style="margin-top:12px">
+          <button id="bSL">Start the module (commands nothing)</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- ----------------------------------------------------------- result -->
   <div class="panel" id="result" hidden></div>
 </div>
@@ -205,7 +256,7 @@ $("#bConnect").onclick = async () => {
   b.disabled = false;
   if (!r.ok) { $("#connMsg").textContent = " " + (r.error || "failed"); return; }
   $("#connMsg").textContent = " connected";
-  for (const id of ["#live","#progress","#step1","#step2"]) $(id).hidden = false;
+  for (const id of ["#live","#progress","#step1","#step2","#step3"]) $(id).hidden = false;
 };
 
 document.querySelectorAll("button.start").forEach(btn => {
@@ -219,6 +270,14 @@ document.querySelectorAll("button.start").forEach(btn => {
   };
 });
 $("#bCancel").onclick = () => post("/api/cancel");
+
+let slOn = false;
+$("#bSL").onclick = async () => {
+  slOn = !slOn;
+  const r = await post("/api/selflevel", {on: slOn});
+  if (!r.ok) { slOn = false; $("#slErr").textContent = r.error || "failed"; }
+  $("#bSL").textContent = slOn ? "Stop the module" : "Start the module (commands nothing)";
+};
 
 // Tiles come from the server's own list: with an FC the positions are named the
 // way a person holding a drone thinks, without one only the sensor's unnameable
@@ -266,7 +325,7 @@ function drawSphere(pts) {
 function showResult(r) {
   const el = $("#result"); el.hidden = false;
   let html = `<div class="lbl" style="margin-bottom:8px">
-      Result &mdash; ${r.kind === "accel" ? "step 1" : "step 2"}
+      Result &mdash; ${r.kind === "accel" ? "step 1" : r.kind === "track" ? "step 3a" : "step 2"}
       <span class="pill ${r.good?'ok':'bad'}">${r.good?'usable':'not good enough'}</span></div>`;
   if (r.kind === "accel") {
     html += `<table>
@@ -277,6 +336,16 @@ function showResult(r) {
       <tr><td>scale (counts/g)</td><td>${r.accel_per_g_axis.join(", ")}</td></tr></table>`;
     if (!r.good) html += `<p class="note">Residual over 2% means some samples were
       not actually at rest. Re-run, moving more slowly and pausing longer.</p>`;
+  } else if (r.kind === "track") {
+    html += `<table>
+      <tr><td>samples</td><td>${r.samples}</td></tr>
+      <tr><td>airframe moved through</td><td>${r.moved_deg}&deg;</td></tr>
+      <tr><td>roll disagreement, mean / worst</td><td>${r.mean_roll}&deg; / ${r.worst_roll}&deg;</td></tr>
+      <tr><td>pitch disagreement, mean / worst</td><td>${r.mean_pitch}&deg; / ${r.worst_pitch}&deg;</td></tr>
+      </table>`;
+    if (!r.good) html += `<p class="note">The ESP32 does not follow the airframe
+      closely enough while moving. Static agreement is not sufficient — recheck
+      the mounting rotation.</p>`;
   } else {
     html += `<table>
       <tr><td>paired samples</td><td>${r.samples}</td></tr>
@@ -290,8 +359,9 @@ function showResult(r) {
       Either the ESP32 is not rigidly mounted to the airframe, step 1 has not been
       run, or the FC's own accelerometer needs calibrating in Betaflight.</p>`;
   }
+  const canApply = r.kind !== "track";
   html += `<div style="margin-top:14px; display:flex; gap:10px; align-items:center">
-      <button id="bApply" ${r.good?'':'disabled'}>Write to vehicle.yaml</button>
+      ${canApply ? `<button id="bApply" ${r.good?'':'disabled'}>Write to vehicle.yaml</button>` : ""}
       <button id="bHide" class="ghost">Dismiss</button>
       <span id="applyMsg" class="note"></span></div>`;
   el.innerHTML = html;
@@ -340,7 +410,7 @@ async function tick() {
     const arming = s.phase === "arming";
     b.classList.toggle("rec", !arming);
     $("#bannerLbl").textContent = (arming ? "Pick the airframe up — " : "Recording — ")
-      + (s.mode === "accel" ? "step 1" : "step 2");
+      + (s.mode === "accel" ? "step 1" : s.mode === "track" ? "step 3a" : "step 2");
     $("#bannerNum").textContent = Math.ceil(s.seconds_left) + (arming ? "" : "s");
     $("#bannerSub").textContent = arming
       ? "recording has not started yet — nothing is being kept"
@@ -358,6 +428,33 @@ async function tick() {
     : '<span class="pill warn">run step 1 first</span> its zero-offset otherwise '
       + 'puts ~9&deg; of systematic tilt into every sample here, which is enough '
       + 'to fail this fit outright.';
+
+  if (s.agree) {
+    const f = (v, el) => { const e = $(el);
+      e.textContent = (v >= 0 ? "+" : "") + v.toFixed(2) + "°";
+      e.style.color = Math.abs(v) < 5 ? "var(--ok)"
+                    : Math.abs(v) < 12 ? "var(--warn)" : "var(--bad)"; };
+    f(s.agree.roll, "#agRoll"); f(s.agree.pitch, "#agPitch");
+  }
+
+  const sl = s.selflevel;
+  $("#slBox").hidden = !(sl && !sl.error);
+  $("#slErr").textContent = sl && sl.error ? sl.error : "";
+  if (sl && !sl.error) {
+    $("#slTilt").textContent = sl.tilt_deg + "°";
+    $("#slRoll").textContent = sl.roll == null ? "—"
+      : sl.roll + (sl.roll > 1500 ? "  (right)" : sl.roll < 1500 ? "  (left)" : "");
+    $("#slPitch").textContent = sl.pitch == null ? "—" : sl.pitch;
+    $("#slSent").textContent = sl.sent_to_fc + " — to a stand-in, never the FC"
+      + (sl.arm_attempts ? "  ⚠ TRIED TO ARM " + sl.arm_attempts + "×" : "");
+    $("#slVerdict").innerHTML = sl.verdict === null
+      ? '<span class="note">tilt it past 8° to judge</span>'
+      : sl.verdict === "opposes"
+        ? '<span class="pill ok">correction opposes the tilt</span>'
+        : '<span class="pill bad">' + sl.verdict + '</span>';
+  }
+
+  $("#n3").className = "num " + (s.axis_verified ? "on" : "");
 
   if (s.result && s.result !== lastResult) { lastResult = s.result; showResult(s.result); }
   else if (s.error && !running) {

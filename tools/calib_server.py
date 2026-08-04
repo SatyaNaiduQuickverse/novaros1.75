@@ -29,6 +29,7 @@ import json
 import math
 import os
 import shutil
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -104,6 +105,71 @@ SENSOR_TARGETS = [("Sensor +X", (1, 0, 0), ""), ("Sensor -X", (-1, 0, 0), ""),
                   ("Sensor +Z", (0, 0, 1), ""), ("Sensor -Z", (0, 0, -1), "")]
 
 
+class SpyFC:
+    """Stands in for the flight controller while the module is probed.
+
+    The command module is handed THIS, never the real link, so step 3 can watch
+    what it would command without a single byte reaching the FC. It also
+    refuses to arm, exactly as the real FCLink does.
+    """
+
+    def __init__(self):
+        self.last = {}
+        self.calls = 0
+        self.arm_attempts = 0
+
+    def set_stick(self, roll=None, pitch=None, yaw=None, throttle=None):
+        self.last = {k: v for k, v in (("roll", roll), ("pitch", pitch),
+                                       ("yaw", yaw), ("throttle", throttle))
+                     if v is not None}
+        self.calls += 1
+
+    def arm(self, on=True):
+        self.arm_attempts += 1
+
+
+class SelfLevelProbe:
+    """Runs the real compiled module against the live IMU, commanding nothing.
+
+    This is the check that cannot be automated away: whether the correction
+    OPPOSES the tilt. A sign error here does not misbehave subtly — it drives
+    the airframe further into the tilt, and every static check upstream passes
+    regardless. So it is watched live, disarmed, with the airframe in the
+    operator's hands and the module's output going to a spy.
+    """
+
+    def __init__(self, cfg, imu):
+        import hashlib
+        import importlib.util
+        path = cfg.module.so_path
+        if not os.path.isabs(path):
+            path = os.path.join(os.path.dirname(HERE), path)
+        if not os.path.exists(path):
+            raise RuntimeError(f"no command module at {path}")
+        if cfg.module.verify_on_load and cfg.module.sha256:
+            h = hashlib.sha256()
+            with open(path, "rb") as f:
+                for chunk in iter(lambda: f.read(1 << 20), b""):
+                    h.update(chunk)
+            if h.hexdigest().lower() != cfg.module.sha256.lower():
+                raise RuntimeError("command module digest does not match the "
+                                   "pinned value — refusing to load it")
+        name = os.path.basename(path).split(".")[0]
+        spec = importlib.util.spec_from_file_location(name, path)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[name] = mod
+        spec.loader.exec_module(mod)
+        self.spy = SpyFC()
+        self.mod = mod.CommandModule(self.spy, imu, None, None)
+        if hasattr(self.mod, "engage"):
+            self.mod.engage()
+        self.t0 = time.monotonic()
+        self.digest_ok = True
+
+    def step(self):
+        return self.mod.step(time.monotonic() - self.t0)
+
+
 class Session:
     """Owns the hardware and whatever collection run is in progress."""
 
@@ -131,6 +197,9 @@ class Session:
         self.fc_grav = None
         self.fc_spec = None
         self.fc_at = 0.0
+        self.probe = None           # SelfLevelProbe, when step 3 is watching
+        self.probe_error = None
+        self.track = []             # (esp roll, esp pitch, fc roll, fc pitch)
 
     # ------------------------------------------------------------- hardware
 
@@ -239,6 +308,34 @@ class Session:
             "axis_verified": bool(self.cfg.imu32.verified),
             "config_path": self.cfg.source,
         }
+        att = self.fc_att
+        if att is not None:
+            # The two independent estimates of the same physical airframe.
+            out["agree"] = {"roll": round(rpy[0] - att["roll"], 2),
+                            "pitch": round(rpy[1] - att["pitch"], 2)}
+        if self.probe is not None:
+            try:
+                cmd = self.probe.step()
+                tilt = math.hypot(rpy[0], rpy[1])
+                verdict = None
+                if att is not None and abs(rpy[0]) > 8:
+                    # The delivered module was accepted on this rule: a positive
+                    # roll (right side down) must pull the roll channel below
+                    # centre. Anything else drives INTO the tilt.
+                    opposes = (cmd.get("roll", 1500) - 1500) * rpy[0] < 0
+                    verdict = "opposes" if opposes else "DRIVES INTO THE TILT"
+                out["selflevel"] = {
+                    "roll": cmd.get("roll"), "pitch": cmd.get("pitch"),
+                    "yaw": cmd.get("yaw"), "throttle": cmd.get("throttle"),
+                    "tilt_deg": round(tilt, 1),
+                    "verdict": verdict,
+                    "sent_to_fc": self.probe.spy.calls,
+                    "arm_attempts": self.probe.spy.arm_attempts,
+                }
+            except Exception as e:
+                out["selflevel"] = {"error": str(e)}
+        elif self.probe_error:
+            out["selflevel"] = {"error": self.probe_error}
         with self.lock:
             att = self.fc_att
         if att is not None:
@@ -306,7 +403,7 @@ class Session:
             if self.mode != "idle":
                 raise RuntimeError("a collection is already running")
             self.mode, self.samples, self.raw = mode, [], []
-            self.body, self.pairs = [], []
+            self.body, self.pairs, self.track = [], [], []
             self.result, self.error = None, None
             self.armed_at = time.monotonic() + lead_in
             self.started, self.duration = self.armed_at, seconds
@@ -316,7 +413,32 @@ class Session:
         with self.lock:
             self.mode = "idle"
 
+    def _collect_track(self):
+        """Step 3: does the ESP32 follow the real airframe, not just sit still?
+
+        Recorded while MOVING, deliberately. Agreeing at rest only proves the
+        static calibration; a wrong sign somewhere downstream still tracks
+        perfectly at zero tilt and diverges the moment the airframe moves.
+        """
+        end = self.started + self.duration
+        while time.monotonic() < end:
+            with self.lock:
+                if self.mode == "idle":
+                    return
+            att = self.fc_att
+            q, _, _ = self.imu.get_state()
+            from companion.math_utils import q_to_euler
+            rpy = q_to_euler(q)
+            if att is not None:
+                with self.lock:
+                    self.track.append((float(rpy[0]), float(rpy[1]),
+                                       att["roll"], att["pitch"]))
+            time.sleep(0.05)
+        self._finish()
+
     def _collect(self):
+        if self.mode == "track":
+            return self._collect_track()
         imu = self.imu
         bias = np.asarray(imu.gyro_bias, float)
         still_counts = STILL_DPS * GYRO_LSB_PER_DPS
@@ -363,10 +485,34 @@ class Session:
             mode, raw, pairs = self.mode, list(self.raw), list(self.pairs)
             self.mode = "idle"
         try:
-            self.result = (self._fit_accel(raw) if mode == "accel"
-                           else self._fit_axis(pairs))
+            if mode == "track":
+                self.result = self._fit_track(list(self.track))
+            elif mode == "accel":
+                self.result = self._fit_accel(raw)
+            else:
+                self.result = self._fit_axis(pairs)
         except Exception as e:
             self.error = str(e)
+
+    def _fit_track(self, rows):
+        if len(rows) < 60:
+            raise RuntimeError(f"only {len(rows)} samples — is the FC connected?")
+        a = np.array(rows, float)
+        d_roll, d_pitch = a[:, 0] - a[:, 2], a[:, 1] - a[:, 3]
+        moved = float(max(a[:, 2].max() - a[:, 2].min(),
+                          a[:, 3].max() - a[:, 3].min()))
+        if moved < 25:
+            raise RuntimeError(f"the airframe only moved {moved:.0f} deg — tilt "
+                               "it properly, agreeing at rest proves nothing")
+        return {
+            "kind": "track", "samples": len(rows),
+            "moved_deg": round(moved, 1),
+            "mean_roll": round(float(np.mean(np.abs(d_roll))), 2),
+            "mean_pitch": round(float(np.mean(np.abs(d_pitch))), 2),
+            "worst_roll": round(float(np.max(np.abs(d_roll))), 2),
+            "worst_pitch": round(float(np.max(np.abs(d_pitch))), 2),
+            "good": bool(np.max(np.abs(d_roll)) < 12 and np.max(np.abs(d_pitch)) < 12),
+        }
 
     def _fit_accel(self, raw):
         if len(raw) < 300:
@@ -524,6 +670,17 @@ class Handler(BaseHTTPRequestHandler):
                 if mode == "axis":
                     s.start_fc()
                 s.begin(mode, float(body.get("seconds", 90)))
+                return self._send(200, json.dumps({"ok": True}))
+            if self.path == "/api/selflevel":
+                if body.get("on"):
+                    s.probe_error = None
+                    try:
+                        s.probe = SelfLevelProbe(s.cfg, s.start_imu())
+                    except Exception as e:
+                        s.probe, s.probe_error = None, str(e)
+                        return self._send(200, json.dumps({"ok": False, "error": str(e)}))
+                else:
+                    s.probe, s.probe_error = None, None
                 return self._send(200, json.dumps({"ok": True}))
             if self.path == "/api/cancel":
                 s.cancel()
