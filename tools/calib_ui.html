@@ -17,9 +17,11 @@
          ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif; }
   .wrap { max-width:1100px; margin:0 auto; padding:20px 16px 60px; }
   h1 { font-size:1.35rem; margin:0 0 2px; }
+  h2 { font-size:1.05rem; margin:0; display:flex; align-items:center; gap:10px; }
   .sub { color:var(--dim); margin:0 0 20px; font-size:.9rem; }
   .panel { background:var(--panel); border:1px solid var(--line);
            border-radius:10px; padding:16px; margin-bottom:14px; }
+  .panel.blocked { opacity:.55; }
   .row { display:flex; gap:14px; flex-wrap:wrap; }
   .col { flex:1 1 320px; min-width:0; }
   button { font:inherit; font-weight:600; padding:10px 18px; border-radius:8px;
@@ -31,6 +33,11 @@
          line-height:1.1; }
   .lbl { color:var(--dim); font-size:.78rem; text-transform:uppercase;
          letter-spacing:.06em; }
+  .num { width:26px; height:26px; border-radius:50%; flex:none; display:grid;
+         place-items:center; font-size:.8rem; font-weight:700;
+         border:1px solid var(--line); }
+  .num.on { background:var(--acc); color:#04121f; border-color:var(--acc); }
+  .num.done { background:var(--ok); color:#04121f; border-color:var(--ok); }
   .grid6 { display:grid; grid-template-columns:repeat(2,1fr); gap:10px; }
   @media (min-width:760px) { .grid6 { grid-template-columns:repeat(3,1fr); } }
   .cap { border:1px solid var(--line); border-radius:8px; padding:12px 10px;
@@ -38,11 +45,10 @@
   .cap .n { font-weight:700; font-size:1.05rem; }
   .cap .h { color:var(--dim); font-size:.72rem; line-height:1.25; margin:2px 0 4px; }
   .cap .c { color:var(--dim); font-size:.78rem; font-variant-numeric:tabular-nums; }
-  /* Where the airframe is pointing right now, so the operator can see the tile
-     they are currently filling rather than guessing. */
   .cap.here { border-color:var(--acc);
               background:color-mix(in srgb,var(--acc) 14%,transparent); }
-  .cap.done { border-color:var(--ok); background:color-mix(in srgb,var(--ok) 16%,transparent); }
+  .cap.done { border-color:var(--ok);
+              background:color-mix(in srgb,var(--ok) 16%,transparent); }
   .cap.done .c { color:var(--ok); }
   .pill { display:inline-block; padding:3px 10px; border-radius:999px;
           font-size:.8rem; font-weight:600; }
@@ -56,23 +62,19 @@
   table { width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums; }
   td { padding:4px 0; } td:last-child { text-align:right; font-weight:600; }
   .note { color:var(--dim); font-size:.86rem; }
-  /* The run banner. Deliberately large: the first version showed the clock as
-     a small number beside the button, and a run in progress was mistaken for
-     the button not working at all. */
+  /* Deliberately large: the first version showed the clock as a small number
+     beside the button, and a run in progress was mistaken for a dead button. */
   #banner { margin-top:16px; padding:18px; border-radius:10px; text-align:center;
             border:2px solid var(--acc);
             background:color-mix(in srgb,var(--acc) 12%,transparent); }
   #banner.rec { border-color:var(--ok);
                 background:color-mix(in srgb,var(--ok) 12%,transparent); }
-  .huge { font-size:4rem; font-weight:800; line-height:1; font-variant-numeric:tabular-nums; }
+  .huge { font-size:4rem; font-weight:800; line-height:1;
+          font-variant-numeric:tabular-nums; }
   @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.45} }
   #banner:not(.rec) .huge { animation:pulse 1s ease-in-out infinite; }
-  .step { display:flex; align-items:center; gap:10px; margin-bottom:10px; }
-  .step .num { width:26px; height:26px; border-radius:50%; flex:none;
-               display:grid; place-items:center; font-size:.8rem; font-weight:700;
-               border:1px solid var(--line); }
-  .step.on .num { background:var(--acc); color:#04121f; border-color:var(--acc); }
-  .step.done .num { background:var(--ok); color:#04121f; border-color:var(--ok); }
+  .poses { margin:10px 0 0; padding-left:18px; }
+  .poses li { margin:3px 0; }
 </style>
 </head>
 <body>
@@ -80,16 +82,17 @@
   <h1>IMU calibration</h1>
   <p class="sub">Props off. This never streams RC and never arms &mdash; it only reads.</p>
 
-  <div class="panel" id="setup">
-    <div class="step on"><span class="num">1</span><b>Connect</b></div>
-    <p class="note" style="margin:0 0 12px">
-      Check the USB cables first. You will be turning the airframe fully over, and
-      both the flight controller and the ESP32 are tethered to the Pi. Make sure
-      there is slack and nothing will pull out mid-run.</p>
+  <!-- ---------------------------------------------------------- connect -->
+  <div class="panel">
+    <h2><span class="num on">0</span>Connect</h2>
+    <p class="note" style="margin:10px 0 12px">
+      Check the USB cables first. You will be turning the airframe fully over and
+      both boards are tethered to the Pi &mdash; make sure nothing pulls out mid-run.</p>
     <button id="bConnect">Connect to hardware</button>
     <span id="connMsg" class="note"></span>
   </div>
 
+  <!-- ------------------------------------------------------------- live -->
   <div class="panel" id="live" hidden>
     <div class="row">
       <div class="col">
@@ -103,26 +106,24 @@
         <div class="note">samples only count while held still</div>
       </div>
       <div class="col">
-        <div class="lbl">Attitude (roll / pitch / yaw)</div>
+        <div class="lbl">ESP32 attitude &mdash; roll / pitch / yaw</div>
         <div class="big" id="rpy" style="font-size:1.5rem">&mdash;</div>
         <div class="note" id="fcline"></div>
       </div>
     </div>
   </div>
 
-  <div class="panel" id="run" hidden>
-    <div class="step on"><span class="num" id="stepNum">2</span><b id="stepName">Accelerometer offset &amp; scale</b></div>
-    <p class="note" id="stepHelp"></p>
-
+  <!-- --------------------------------------------------------- progress -->
+  <div class="panel" id="progress" hidden>
     <div class="row" style="align-items:flex-start">
       <div class="col">
         <div class="lbl" style="margin-bottom:8px">Positions captured
           <span id="capCount" class="note"></span></div>
         <div class="grid6" id="caps"></div>
         <p class="note" style="margin:12px 0 0">
-          Hold each position for about a second. Order does not matter, and
-          neither does precision &mdash; anywhere within about 30&deg; counts.
-          Only that every tile turns green.</p>
+          Hold each position about a second. Order and precision do not matter
+          &mdash; anywhere within roughly 30&deg; counts. The tile you are
+          currently in lights blue, then turns green once captured.</p>
       </div>
       <div class="col">
         <div class="lbl" style="margin-bottom:8px">Coverage</div>
@@ -139,58 +140,56 @@
       <div class="note" id="bannerSub"></div>
     </div>
 
-    <div style="margin-top:16px; display:flex; gap:10px; align-items:center; flex-wrap:wrap">
-      <button id="bStart">Start &mdash; 10s to pick it up</button>
-      <button id="bCancel" class="ghost" hidden>Cancel</button>
+    <div style="margin-top:14px; display:flex; gap:10px; align-items:center">
+      <button id="bCancel" class="ghost" hidden>Cancel run</button>
       <span class="note" id="sampCount"></span>
     </div>
   </div>
 
-  <div class="panel" id="result" hidden></div>
-
-  <div class="panel">
-    <div class="lbl" style="margin-bottom:10px">Sequence</div>
-    <div class="step" id="s1"><span class="num">1</span>Accelerometer offset &amp; scale &mdash; removes the ~10&deg; error in &ldquo;down&rdquo;</div>
-    <div class="step" id="s2"><span class="num">2</span>Axis map vs the flight controller &mdash; which body axis is which, and the signs</div>
-    <div class="step" id="s3"><span class="num">3</span>Independent check &mdash; level reads 0&deg;/0&deg;, tilts track, correction opposes</div>
-    <p class="note" style="margin:6px 0 0">Both calibrations are needed and they
-      fix different things. Step 1 first: step 2 picks each axis from the largest
-      raw component, and the offset step 1 removes is easily large enough to
-      mis-call a shallow tilt.</p>
+  <!-- ----------------------------------------------------------- step 1 -->
+  <div class="panel" id="step1" hidden>
+    <h2><span class="num on" id="n1">1</span>Accelerometer offset &amp; scale
+      <span id="p1"></span></h2>
+    <p class="note" style="margin:10px 0 0">
+      <b>90 seconds.</b> Tumble the airframe so gravity visits every face. This
+      finds the per-axis zero error that tilts which way the sensor believes is
+      down &mdash; measured at 0.154&nbsp;g on this part, worth 8.8&deg;.</p>
+    <div style="margin-top:14px">
+      <button class="start" data-mode="accel" data-secs="90">
+        Start step 1 &mdash; 10s to pick it up</button>
+    </div>
   </div>
+
+  <!-- ----------------------------------------------------------- step 2 -->
+  <div class="panel" id="step2" hidden>
+    <h2><span class="num" id="n2">2</span>Axis map, against the flight controller
+      <span id="p2"></span></h2>
+    <p class="note" style="margin:10px 0 0">
+      <b>60 seconds.</b> Tumble it again, exactly the same way. The flight
+      controller is a second IMU on the same rigid airframe, so comparing the two
+      recovers how the ESP32 is mounted &mdash; which body axis is which, and the
+      signs. No named poses are required: the FC supplies ground truth, so you do
+      not have to hit any particular angle.</p>
+    <ul class="poses note">
+      <li><b>Nose up</b> &mdash; nose toward the sky (pitch stick back)</li>
+      <li><b>Nose down</b> &mdash; nose toward the ground (pitch stick forward)</li>
+      <li><b>Roll right / left</b> &mdash; that side down</li>
+      <li><b>Level / Inverted</b> &mdash; upright, then upside down</li>
+    </ul>
+    <p class="note" id="step2warn" style="margin:10px 0 0"></p>
+    <div style="margin-top:14px">
+      <button class="start" data-mode="axis" data-secs="60">
+        Start step 2 &mdash; 10s to pick it up</button>
+    </div>
+  </div>
+
+  <!-- ----------------------------------------------------------- result -->
+  <div class="panel" id="result" hidden></div>
 </div>
 
 <script>
 const $ = s => document.querySelector(s);
-let mode = "accel", running = false, lastResult = null, connected = false;
-let capKeys = [];
-
-// Tiles are rebuilt from the server's own list, because the NAMES depend on
-// whether the flight controller is supplying attitude. With it, positions are
-// named the way a person holding a drone thinks — nose up, roll left. Without
-// it, only the sensor's own unnameable axes are available, since working out
-// which sensor axis is which is exactly what step 2 does.
-function capsRender(covered, pose) {
-  const keys = covered.map(c => c.name).join("|");
-  if (keys !== capKeys.join("|")) {
-    capKeys = covered.map(c => c.name);
-    $("#caps").innerHTML = covered.map((c, i) =>
-      `<div class="cap" data-i="${i}">
-         <div class="n">${c.name}</div>
-         <div class="h">${c.hint || ""}</div>
-         <div class="c">0</div></div>`).join("");
-  }
-  let done = 0;
-  document.querySelectorAll("#caps .cap").forEach((el, i) => {
-    const c = covered[i];
-    const got = c.count >= 20;
-    if (got) done++;
-    el.classList.toggle("done", got);
-    el.classList.toggle("here", c.name === pose && !got);
-    el.querySelector(".c").textContent = got ? "captured" : (c.count || "—");
-  });
-  return done;
-}
+let running = false, lastResult = null, capKeys = [];
 
 async function post(path, body) {
   const r = await fetch(path, {method:"POST", headers:{"Content-Type":"application/json"},
@@ -199,41 +198,65 @@ async function post(path, body) {
 }
 
 $("#bConnect").onclick = async () => {
-  $("#bConnect").disabled = true;
+  const b = $("#bConnect");
+  b.disabled = true;
   $("#connMsg").textContent = " connecting (the bridge is rebooted into an open port, ~3s) ...";
   const r = await post("/api/connect", {fc:true});
-  $("#bConnect").disabled = false;
-  if (!r.ok) { $("#connMsg").textContent = " " + (r.error||"failed"); return; }
-  connected = true;
+  b.disabled = false;
+  if (!r.ok) { $("#connMsg").textContent = " " + (r.error || "failed"); return; }
   $("#connMsg").textContent = " connected";
-  $("#live").hidden = false; $("#run").hidden = false;
+  for (const id of ["#live","#progress","#step1","#step2"]) $(id).hidden = false;
 };
 
-$("#bStart").onclick = async () => {
-  const secs = mode === "accel" ? 90 : 60;
-  const r = await post("/api/start", {mode, seconds: secs});
-  if (!r.ok) { alert(r.error || "could not start"); return; }
-  $("#result").hidden = true;
-};
+document.querySelectorAll("button.start").forEach(btn => {
+  btn.onclick = async () => {
+    const r = await post("/api/start",
+      {mode: btn.dataset.mode, seconds: Number(btn.dataset.secs)});
+    if (!r.ok) { alert(r.error || "could not start"); return; }
+    lastResult = null;
+    $("#result").hidden = true;
+    $("#progress").scrollIntoView({behavior:"smooth", block:"center"});
+  };
+});
 $("#bCancel").onclick = () => post("/api/cancel");
+
+// Tiles come from the server's own list: with an FC the positions are named the
+// way a person holding a drone thinks, without one only the sensor's unnameable
+// axes are available — working out which sensor axis is which IS step 2.
+function capsRender(covered, pose) {
+  const keys = covered.map(c => c.name).join("|");
+  if (keys !== capKeys.join("|")) {
+    capKeys = covered.map(c => c.name);
+    $("#caps").innerHTML = covered.map(c =>
+      `<div class="cap"><div class="n">${c.name}</div>
+         <div class="h">${c.hint || ""}</div><div class="c">&mdash;</div></div>`).join("");
+  }
+  let done = 0;
+  document.querySelectorAll("#caps .cap").forEach((el, i) => {
+    const c = covered[i], got = c.count >= 20;
+    if (got) done++;
+    el.classList.toggle("done", got);
+    el.classList.toggle("here", c.name === pose && !got);
+    el.querySelector(".c").textContent = got ? "captured" : (c.count || "—");
+  });
+  return done;
+}
 
 function drawSphere(pts) {
   const c = $("#sphere"), g = c.getContext("2d");
   const W = c.width, H = c.height, R = H/2 - 12;
+  const cs = getComputedStyle(document.body);
   g.clearRect(0,0,W,H);
   [[W*0.25,"front"],[W*0.75,"top"]].forEach(([cx,label]) => {
-    g.strokeStyle = getComputedStyle(document.body).getPropertyValue("--line");
-    g.lineWidth = 1;
+    g.strokeStyle = cs.getPropertyValue("--line"); g.lineWidth = 1;
     g.beginPath(); g.arc(cx, H/2, R, 0, Math.PI*2); g.stroke();
     g.beginPath(); g.moveTo(cx-R,H/2); g.lineTo(cx+R,H/2);
     g.moveTo(cx,H/2-R); g.lineTo(cx,H/2+R); g.stroke();
-    g.fillStyle = getComputedStyle(document.body).getPropertyValue("--dim");
-    g.font = "11px system-ui"; g.textAlign = "center";
-    g.fillText(label, cx, H-2);
+    g.fillStyle = cs.getPropertyValue("--dim"); g.font = "11px system-ui";
+    g.textAlign = "center"; g.fillText(label, cx, H-2);
   });
-  g.fillStyle = getComputedStyle(document.body).getPropertyValue("--acc");
+  g.fillStyle = cs.getPropertyValue("--acc"); g.globalAlpha = 0.55;
   for (const p of pts) {
-    g.globalAlpha = 0.55;
     g.beginPath(); g.arc(W*0.25 + p[0]*R, H/2 - p[2]*R, 2, 0, 6.3); g.fill();
     g.beginPath(); g.arc(W*0.75 + p[0]*R, H/2 - p[1]*R, 2, 0, 6.3); g.fill();
   }
@@ -242,9 +265,9 @@ function drawSphere(pts) {
 
 function showResult(r) {
   const el = $("#result"); el.hidden = false;
-  const good = r.good;
-  let html = `<div class="lbl" style="margin-bottom:8px">Result
-      <span class="pill ${good?'ok':'bad'}">${good?'usable':'not good enough'}</span></div>`;
+  let html = `<div class="lbl" style="margin-bottom:8px">
+      Result &mdash; ${r.kind === "accel" ? "step 1" : "step 2"}
+      <span class="pill ${r.good?'ok':'bad'}">${r.good?'usable':'not good enough'}</span></div>`;
   if (r.kind === "accel") {
     html += `<table>
       <tr><td>still samples</td><td>${r.samples}</td></tr>
@@ -252,49 +275,36 @@ function showResult(r) {
       <tr><td>largest offset was worth</td><td>${r.false_tilt_deg}&deg; of false tilt</td></tr>
       <tr><td>offset (counts)</td><td>${r.accel_offset.join(", ")}</td></tr>
       <tr><td>scale (counts/g)</td><td>${r.accel_per_g_axis.join(", ")}</td></tr></table>`;
-    if (!good) html += `<p class="note">Residual over 2% means some samples were
+    if (!r.good) html += `<p class="note">Residual over 2% means some samples were
       not actually at rest. Re-run, moving more slowly and pausing longer.</p>`;
   } else {
     html += `<table>
       <tr><td>paired samples</td><td>${r.samples}</td></tr>
       <tr><td>disagreement with the FC</td><td>${r.residual_deg}&deg;</td></tr>
-      <tr><td>snap confidence</td><td>${r.confidence} (1.0 = square mounting)</td></tr>
+      <tr><td>snap confidence</td><td>${r.confidence} &nbsp;(1.0 = square mounting)</td></tr>
       <tr><td>axis map</td><td>${r.axis_map.map(a=>`[${a[0]}, ${a[1]>0?'+1':'-1'}]`).join(" ")}</td></tr>
-      </table><pre>${r.matrix.map(row=>"[ "+row.map(v=>v>=0?" "+v.toFixed(3):v.toFixed(3)).join("  ")+" ]").join("\n")}</pre>`;
-    if (!good) html += `<p class="note">The two sensors do not agree well enough.
+      </table>
+      <div class="note" style="margin-top:10px">measured rotation, sensor &rarr; airframe FRD:</div>
+      <pre>${r.matrix.map(row=>"[ "+row.map(v=>(v>=0?" ":"")+v.toFixed(3)).join("  ")+" ]").join("\n")}</pre>`;
+    if (!r.good) html += `<p class="note">The two sensors do not agree well enough.
       Either the ESP32 is not rigidly mounted to the airframe, step 1 has not been
       run, or the FC's own accelerometer needs calibrating in Betaflight.</p>`;
   }
-  html += `<div style="margin-top:14px; display:flex; gap:10px">
-      <button id="bApply" ${good?'':'disabled'}>Write to vehicle.yaml</button>
-      <button id="bRedo" class="ghost">Run again</button></div>
-      <span id="applyMsg" class="note"></span>`;
+  html += `<div style="margin-top:14px; display:flex; gap:10px; align-items:center">
+      <button id="bApply" ${r.good?'':'disabled'}>Write to vehicle.yaml</button>
+      <button id="bHide" class="ghost">Dismiss</button>
+      <span id="applyMsg" class="note"></span></div>`;
   el.innerHTML = html;
-  $("#bRedo").onclick = () => { el.hidden = true; };
+  $("#bHide").onclick = () => { el.hidden = true; };
   const ap = $("#bApply");
   if (ap) ap.onclick = async () => {
     ap.disabled = true;
     const res = await post("/api/apply", {});
     $("#applyMsg").textContent = res.ok
-      ? "  written (previous file kept as " + res.backup + ")"
-      : "  " + (res.error || "failed");
-    if (res.ok && r.kind === "accel") setMode("axis");
+      ? "written — previous file kept as " + res.backup
+      : (res.error || "failed");
   };
 }
-
-function setMode(m) {
-  mode = m;
-  const accel = m === "accel";
-  $("#stepNum").textContent = accel ? "2" : "3";
-  $("#stepName").textContent = accel
-    ? "Accelerometer offset & scale" : "Axis map, against the flight controller";
-  $("#stepHelp").textContent = accel
-    ? "90 seconds. Tumble the airframe so gravity visits every face. This finds the per-axis zero error that tilts which way the sensor thinks is down."
-    : "60 seconds. Tumble it again, the same way. The flight controller is a second IMU on the same airframe, so comparing the two recovers how the ESP32 is mounted — no named poses needed.";
-  $("#bStart").textContent = accel
-    ? "Start step 1 — 10s to pick it up" : "Start step 2 — 10s to pick it up";
-}
-setMode("accel");
 
 async function tick() {
   let s;
@@ -320,7 +330,7 @@ async function tick() {
   drawSphere(s.points || []);
 
   running = s.mode !== "idle";
-  $("#bStart").disabled = running;
+  document.querySelectorAll("button.start").forEach(b => b.disabled = running);
   $("#bCancel").hidden = !running;
   $("#sampCount").textContent = running ? `${s.samples} still samples kept` : "";
 
@@ -329,7 +339,8 @@ async function tick() {
   if (running) {
     const arming = s.phase === "arming";
     b.classList.toggle("rec", !arming);
-    $("#bannerLbl").textContent = arming ? "Pick the airframe up" : "Recording";
+    $("#bannerLbl").textContent = (arming ? "Pick the airframe up — " : "Recording — ")
+      + (s.mode === "accel" ? "step 1" : "step 2");
     $("#bannerNum").textContent = Math.ceil(s.seconds_left) + (arming ? "" : "s");
     $("#bannerSub").textContent = arming
       ? "recording has not started yet — nothing is being kept"
@@ -338,13 +349,22 @@ async function tick() {
                   : "holding still, but not near any of the six — keep turning");
   }
 
-  $("#s1").className = "step" + (s.calibrated ? " done" : mode==="accel" ? " on" : "");
-  $("#s2").className = "step" + (s.axis_verified ? " done" : mode==="axis" ? " on" : "");
+  $("#n1").className = "num " + (s.calibrated ? "done" : "on");
+  $("#p1").innerHTML = s.calibrated ? '<span class="pill ok">measured</span>' : "";
+  $("#n2").className = "num " + (s.axis_verified ? "done" : s.calibrated ? "on" : "");
+  $("#p2").innerHTML = s.axis_verified ? '<span class="pill ok">measured</span>' : "";
+  $("#step2").classList.toggle("blocked", !s.calibrated);
+  $("#step2warn").innerHTML = s.calibrated ? ""
+    : '<span class="pill warn">run step 1 first</span> its zero-offset otherwise '
+      + 'puts ~9&deg; of systematic tilt into every sample here, which is enough '
+      + 'to fail this fit outright.';
 
   if (s.result && s.result !== lastResult) { lastResult = s.result; showResult(s.result); }
-  if (s.error) { $("#result").hidden = false;
+  else if (s.error && !running) {
+    $("#result").hidden = false;
     $("#result").innerHTML = `<span class="pill bad">could not fit</span>
-      <p class="note">${s.error}</p>`; }
+      <p class="note">${s.error}</p>`;
+  }
   setTimeout(tick, running ? 120 : 350);
 }
 tick();
