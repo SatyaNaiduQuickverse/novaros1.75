@@ -149,6 +149,14 @@ class ESP32IMUCal:
     accel_offset: tuple = (0.0, 0.0, 0.0)   # raw counts, sensor frame
     accel_per_g_axis: tuple = ()            # empty -> fall back to accel_per_g
     axis_map: tuple = ((0, 1.0), (1, 1.0), (2, 1.0))
+    # Exact measured sensor->body rotation, 3 rows. Takes precedence over
+    # axis_map when set. axis_map can only express whole 90 degree steps, but
+    # a real board is never bolted on perfectly square: this one measured ~5
+    # deg out, and snapping that away left a standing 4.5 deg pitch error —
+    # visible as the ESP32 disagreeing with the FC on a level bench. axis_map
+    # is kept alongside because it is readable at a glance and is what the
+    # mounting "is"; this is the correction on top.
+    mount_matrix: tuple = ()
     kp: float = 2.0                  # gravity correction gain
     ki: float = 0.05                 # residual bias integrator
     verified: bool = False

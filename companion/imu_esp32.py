@@ -150,6 +150,24 @@ def pulse_reset(ser, settle_s: float = 0.15) -> None:
         pass
 
 
+def _mount_from(cal):
+    """The measured 3x3 sensor->body rotation, or None to fall back to axis_map."""
+    rows = tuple(getattr(cal, "mount_matrix", ()) or ())
+    if len(rows) != 3:
+        return None
+    M = np.asarray([list(r) for r in rows], float)
+    if M.shape != (3, 3):
+        raise ValueError(f"mount_matrix must be 3x3, got {M.shape}")
+    # A mounting is a rotation. Refuse anything else rather than quietly
+    # skewing or mirroring every attitude the flight article acts on.
+    if not np.allclose(M @ M.T, np.eye(3), atol=1e-3):
+        raise ValueError("mount_matrix is not orthogonal — not a rotation")
+    if not np.isclose(np.linalg.det(M), 1.0, atol=1e-3):
+        raise ValueError(f"mount_matrix det={np.linalg.det(M):.3f}, not +1 — "
+                         "that is a reflection, which cannot be bolted to anything")
+    return M
+
+
 class Mahony:
     """Complementary attitude filter, gyro corrected toward measured gravity.
 
@@ -215,12 +233,14 @@ class ESP32IMU:
         self.accel_per_g = ACCEL_LSB_PER_G
         self.accel_offset = np.zeros(3)
         self.axis_map = ((0, 1.0), (1, 1.0), (2, 1.0))   # sensor -> body FRD
+        self.mount = None                                # exact rotation, if measured
         if cal is not None:
             self.gyro_bias = np.asarray(getattr(cal, "gyro_bias", [0, 0, 0]), float)
             self.accel_per_g = float(getattr(cal, "accel_per_g", ACCEL_LSB_PER_G))
             self.accel_offset = np.asarray(
                 getattr(cal, "accel_offset", [0.0, 0.0, 0.0]), float)
             self.axis_map = tuple(getattr(cal, "axis_map", self.axis_map))
+            self.mount = _mount_from(cal)
         # Counts per g, per sensor axis. MEASURED 2026-08-04: this part is not
         # well described by one number — at rest it reported |a| = 2400 counts
         # with gravity on sensor z and 2001 with gravity on sensor x, a 20%
@@ -371,6 +391,8 @@ class ESP32IMU:
     # ---------------------------------------------------------------- read
 
     def _to_body(self, v):
+        if self.mount is not None:
+            return self.mount @ v
         return np.array([sign * v[src] for src, sign in self.axis_map], float)
 
     def _loop(self):
@@ -483,6 +505,7 @@ class ESP32IMU:
         self.accel_offset = np.asarray(
             getattr(cal, "accel_offset", [0.0, 0.0, 0.0]), float)
         self.axis_map = tuple(getattr(cal, "axis_map", self.axis_map))
+        self.mount = _mount_from(cal)
         per_axis = tuple(getattr(cal, "accel_per_g_axis", ()) or ())
         self.accel_scale = (np.asarray(per_axis, float) if len(per_axis) == 3
                             else np.full(3, self.accel_per_g))

@@ -171,23 +171,13 @@ imu32:
   accel_per_g: 2061.3
   # UNVERIFIED — sensor frame to airframe FRD. Identity until the board's
   # mounting is known; needs level + tilts. Run: bringup imu32 --calibrate
-  # ✅ MEASURED 2026-08-05 against the FC (calib UI, step 2): 404 paired
-  # samples, residual 0.92 deg, snap confidence 0.992. Confirms BOTH
-  # standing hypotheses at once — the operator's read that the board sits
-  # rotated 90 deg in the XY plane, and the z flip implied by the sensor
-  # reporting +1 g on z when the airframe is level.
-  #   FRD x = sensor y,  FRD y = sensor x,  FRD z = -sensor z
-  axis_map: [[1, +1.0], [0, +1.0], [2, -1.0]]
-  # The exact rotation, and it is what actually gets used. The board is
-  # bolted on 7.5 deg off square, which axis_map cannot express — it only
-  # holds whole 90 deg steps. Snapping that away left the ESP32 reading
-  # pitch -4.5 on a bench where the FC read -0.3, i.e. a standing error
-  # the self-level module would have flown into. Same measurement, just
-  # not rounded off. Re-orthogonalised to a true rotation (det +1).
-  mount_matrix: [[+0.090992, +0.991600, +0.091925], [+0.995533, -0.092910, +0.016795], [+0.025194, +0.089986, -0.995624]]
+  axis_map:
+    - [0, +1.0]
+    - [1, +1.0]
+    - [2, +1.0]
   kp: 2.0
   ki: 0.05
-  verified: true
+  verified: false
   # ✅ MEASURED 2026-08-04 with the ellipsoid tumble fit (calib UI, step 1).
   # This settles the 2400-vs-2000 question completely, and the answer is the
   # one that mattered: the SCALES are essentially perfect (2048.0 / 2047.6 /

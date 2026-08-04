@@ -608,3 +608,64 @@ class TestConfigWiring(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestMountMatrix(unittest.TestCase):
+    """The exact mounting rotation, for a board that is not bolted on square.
+
+    axis_map can only express whole 90 degree steps. The ESP32 on this airframe
+    sits on top of the FC but 7.5 degrees out of parallel with it, and snapping
+    that away left the ESP32 reading pitch -4.5 where the FC read -0.3 — a
+    standing error the self-level module would have flown into.
+    """
+
+    def test_it_takes_precedence_over_axis_map(self):
+        class C(_Cal):
+            axis_map = ((0, 1.0), (1, 1.0), (2, 1.0))     # identity
+            mount_matrix = ((0.0, 1.0, 0.0), (1.0, 0.0, 0.0), (0.0, 0.0, -1.0))
+        imu = make_imu(C())
+        imu._on_frame(frame(1, int(ACCEL_LSB_PER_G), 0, 0, 0, 0, 0))
+        _, _, a = imu.get_state()
+        np.testing.assert_allclose(a, [0.0, G, 0.0], atol=1e-3)
+
+    def test_it_keeps_the_few_degrees_axis_map_rounds_away(self):
+        """The measured 7.5 deg skew must survive, not be snapped to 90."""
+        t = math.radians(7.5)
+        skewed = ((math.cos(t), -math.sin(t), 0.0),
+                  (math.sin(t), math.cos(t), 0.0),
+                  (0.0, 0.0, 1.0))
+
+        class C(_Cal):
+            mount_matrix = skewed
+        imu = make_imu(C())
+        imu._on_frame(frame(1, int(ACCEL_LSB_PER_G), 0, 0, 0, 0, 0))
+        _, _, a = imu.get_state()
+        self.assertAlmostEqual(math.degrees(math.atan2(a[1], a[0])), 7.5, places=3)
+
+    def test_absent_matrix_falls_back_to_axis_map(self):
+        imu = make_imu()
+        self.assertIsNone(imu.mount)
+
+    def test_a_non_rotation_is_refused(self):
+        """A skewed or mirrored matrix would corrupt every attitude silently."""
+        from companion.imu_esp32 import _mount_from
+
+        class Skew:
+            mount_matrix = ((1.0, 0.3, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
+
+        class Mirror:                                  # det = -1
+            mount_matrix = ((0.0, 1.0, 0.0), (1.0, 0.0, 0.0), (0.0, 0.0, 1.0))
+
+        with self.assertRaises(ValueError):
+            _mount_from(Skew())
+        with self.assertRaises(ValueError):
+            _mount_from(Mirror())
+
+    def test_the_committed_config_is_a_real_rotation(self):
+        from companion.config import load
+        from companion.imu_esp32 import _mount_from
+        repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        cfg = load(os.path.join(repo, "config", "vehicle.yaml"))
+        M = _mount_from(cfg.imu32)                     # raises if not a rotation
+        if M is not None:
+            self.assertAlmostEqual(float(np.linalg.det(M)), 1.0, places=3)

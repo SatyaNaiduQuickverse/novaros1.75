@@ -44,6 +44,14 @@ from tools.bringup import (
 )
 
 
+def _perm_matrix(rows):
+    """The snapped axis_map as a matrix, for measuring what snapping discards."""
+    M = np.zeros((3, 3))
+    for i, (src, sign) in enumerate(rows):
+        M[i, src] = sign
+    return M
+
+
 def _jsonable(o):
     """numpy scalars are not JSON serialisable, and the failure is silent.
 
@@ -400,6 +408,12 @@ class Session:
             "confidence": round(float(quality), 3),
             "axis_map": [[int(src), float(sign)] for src, sign in rows],
             "matrix": [[round(float(v), 3) for v in r] for r in M],
+            # The exact rotation, kept to full precision. axis_map rounds the
+            # mounting to whole 90 deg steps; this preserves the few degrees of
+            # real skew that rounding would otherwise leave as standing error.
+            "mount_matrix": [[round(float(v), 6) for v in r] for r in M],
+            "skew_deg": round(float(np.degrees(np.arccos(np.clip(
+                (np.trace(M @ _perm_matrix(rows).T) - 1) / 2, -1, 1)))), 2),
             "good": bool(resid < 8.0 and quality > 0.80),
         }
 
@@ -419,7 +433,10 @@ def apply_to_yaml(path: str, values: dict) -> str:
     def fmt(v):
         if isinstance(v, (list, tuple)):
             if v and isinstance(v[0], (list, tuple)):
-                return "[" + ", ".join("[%d, %+.1f]" % (a, b) for a, b in v) + "]"
+                if all(len(r) == 2 for r in v):          # axis_map pairs
+                    return "[" + ", ".join("[%d, %+.1f]" % (a, b) for a, b in v) + "]"
+                return "[" + ", ".join(                  # a 3x3 rotation
+                    "[" + ", ".join(f"{x:+.6f}" for x in r) + "]" for r in v) + "]"
             return "[" + ", ".join(f"{x}" for x in v) + "]"
         return f"{v}"
 
@@ -518,7 +535,9 @@ class Handler(BaseHTTPRequestHandler):
                             "accel_per_g_axis": r["accel_per_g_axis"],
                             "accel_per_g": r["accel_per_g"]}
                 elif r.get("kind") == "axis":
-                    vals = {"axis_map": r["axis_map"], "verified": "true"}
+                    vals = {"axis_map": r["axis_map"],
+                            "mount_matrix": r["mount_matrix"],
+                            "verified": "true"}
                 else:
                     raise RuntimeError("no result to apply")
                 backup = apply_to_yaml(s.cfg.source or DEFAULT_CONFIG, vals)
