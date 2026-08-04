@@ -926,6 +926,22 @@ def _gravity_in_body_from_fc(att):
                      math.cos(r) * math.cos(p)])
 
 
+def _specific_force_in_body_from_fc(att):
+    """What an ACCELEROMETER on this airframe should read, per the FC.
+
+    Not the gravity direction — its opposite. An accelerometer at rest measures
+    specific force, which points UP, while ``_gravity_in_body_from_fc`` returns
+    NED down. Fitting the sensor's reading against the down vector instead of
+    this cost a whole calibration run: every pair was antiparallel to the
+    truth, so the fit was solving for the closest proper rotation to -R. That
+    is degenerate — -R is improper, and the nearest rotation to it is any of
+    infinitely many 180 deg rotations — so it returned a structured-looking,
+    arbitrary answer. It got the x/y swap right and the z sign wrong, which is
+    exactly the shape of result that gets believed.
+    """
+    return -_gravity_in_body_from_fc(att)
+
+
 def _snap_to_signed_permutation(M):
     """Nearest (axis, sign) map to a measured rotation, greedily by magnitude.
 
@@ -945,7 +961,7 @@ def _snap_to_signed_permutation(M):
         j = cand[int(np.argmax(np.abs(M[i, cand])))]
         used.add(j)
         out[i] = (j, float(np.sign(M[i, j]) or 1.0))
-        quality = min(quality, abs(M[i, j]))
+        quality = min(quality, float(abs(M[i, j])))
     rows = out
     return rows, quality
 
@@ -996,7 +1012,7 @@ def _imu32_axis_map_fc(imu, cfg, seconds=60.0):
                 a_sensor = imu.sensor_accel()       # offset/scale removed
                 if np.linalg.norm(a_sensor) > 1:
                     try:
-                        v_fc = _gravity_in_body_from_fc(fc.attitude())
+                        v_fc = _specific_force_in_body_from_fc(fc.attitude())
                     except Exception:
                         continue
                     a_hat = a_sensor / np.linalg.norm(a_sensor)

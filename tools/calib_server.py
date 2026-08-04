@@ -40,8 +40,27 @@ from companion.imu_esp32 import ESP32IMU, GYRO_LSB_PER_DPS
 
 from tools.bringup import (
     _fit_accel_ellipsoid, _gravity_in_body_from_fc, _snap_to_signed_permutation,
-    _turned_span,
+    _specific_force_in_body_from_fc, _turned_span,
 )
+
+
+def _jsonable(o):
+    """numpy scalars are not JSON serialisable, and the failure is silent.
+
+    A stray numpy bool in one result field made the WHOLE state response fail,
+    so a completed 60 s calibration was stranded in memory with the page
+    showing nothing. Casting at the boundary means one leaked type can never
+    take down the response again.
+    """
+    if isinstance(o, (np.bool_,)):
+        return bool(o)
+    if isinstance(o, np.integer):
+        return int(o)
+    if isinstance(o, np.floating):
+        return float(o)
+    if isinstance(o, np.ndarray):
+        return o.tolist()
+    raise TypeError(f"not JSON serialisable: {type(o).__name__}")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PAGE = os.path.join(HERE, "calib_ui.html")
@@ -102,6 +121,7 @@ class Session:
         # and silently slow every other rate.
         self.fc_att = None
         self.fc_grav = None
+        self.fc_spec = None
         self.fc_at = 0.0
 
     # ------------------------------------------------------------- hardware
@@ -126,21 +146,29 @@ class Session:
         while not self._stop.is_set():
             try:
                 att = self.fc.attitude()
-                grav = _gravity_in_body_from_fc(att)
+                grav = _gravity_in_body_from_fc(att)          # down, for pose naming
+                spec = _specific_force_in_body_from_fc(att)   # up, what accels read
                 with self.lock:
-                    self.fc_att, self.fc_grav = att, grav
+                    self.fc_att, self.fc_grav, self.fc_spec = att, grav, spec
                     self.fc_at = time.monotonic()
             except Exception:
                 with self.lock:
-                    self.fc_att = self.fc_grav = None
+                    self.fc_att = self.fc_grav = self.fc_spec = None
             time.sleep(0.1)
 
     def _fc_gravity(self):
-        """Cached airframe gravity direction, or None if stale/absent."""
+        """Cached airframe DOWN direction, or None if stale/absent."""
         with self.lock:
             if self.fc_grav is None or time.monotonic() - self.fc_at > 1.0:
                 return None
             return self.fc_grav.copy()
+
+    def _fc_specific_force(self):
+        """Cached airframe UP direction — what an accelerometer at rest reads."""
+        with self.lock:
+            if self.fc_spec is None or time.monotonic() - self.fc_at > 1.0:
+                return None
+            return self.fc_spec.copy()
 
     def close(self):
         self._stop.set()
@@ -309,13 +337,16 @@ class Session:
                 # maths, but it does need the operator to know which way is
                 # "nose up", and only the FC can say that before step 2.
                 grav = self._fc_gravity()
+                spec = self._fc_specific_force()
                 with self.lock:
                     self.samples.append(unit)
                     self.raw.append(a)
                     if grav is not None:
                         self.body.append(grav)
-                        if mode == "axis":
-                            self.pairs.append((unit, grav))
+                        if mode == "axis" and spec is not None:
+                            # Pair the sensor's reading against what an accel
+                            # SHOULD read (up), never against gravity (down).
+                            self.pairs.append((unit, spec))
             time.sleep(0.01 if mode == "accel" else 0.05)
         self._finish()
 
@@ -344,7 +375,7 @@ class Session:
             "accel_offset": [round(float(v), 1) for v in offset],
             "accel_per_g_axis": [round(float(v), 1) for v in scale],
             "accel_per_g": round(float(scale.mean()), 1),
-            "good": resid < 0.02,
+            "good": bool(resid < 0.02),
         }
 
     def _fit_axis(self, pairs):
@@ -366,10 +397,10 @@ class Session:
             "kind": "axis",
             "samples": len(pairs),
             "residual_deg": round(resid, 2),
-            "confidence": round(quality, 3),
+            "confidence": round(float(quality), 3),
             "axis_map": [[int(src), float(sign)] for src, sign in rows],
             "matrix": [[round(float(v), 3) for v in r] for r in M],
-            "good": resid < 8.0 and quality > 0.80,
+            "good": bool(resid < 8.0 and quality > 0.80),
         }
 
 
@@ -456,7 +487,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, f.read(), "text/html; charset=utf-8")
         if self.path == "/api/state":
             try:
-                return self._send(200, json.dumps(s.snapshot()))
+                return self._send(200, json.dumps(s.snapshot(), default=_jsonable))
             except Exception as e:
                 return self._send(200, json.dumps({"ok": False, "reason": str(e)}))
         return self._send(404, json.dumps({"error": "no such path"}))

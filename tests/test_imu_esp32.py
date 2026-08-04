@@ -278,6 +278,61 @@ class TestAxisMapAgainstFC(unittest.TestCase):
                 v = b._gravity_in_body_from_fc({"roll": float(r), "pitch": float(p)})
                 self.assertAlmostEqual(np.linalg.norm(v), 1.0, places=9)
 
+    def test_accelerometer_target_is_UP_not_gravity(self):
+        """An accel at rest reads specific force, which opposes gravity.
+
+        Fitting the sensor against the DOWN vector cost a whole 60 s
+        calibration run: every pair was antiparallel to the truth, so the fit
+        solved for the closest proper rotation to -R. That is degenerate — -R
+        is improper and the nearest rotation to it is any of infinitely many
+        180 deg rotations — so it returned an arbitrary but structured-looking
+        answer, right about the x/y swap and wrong about the z sign.
+        """
+        b = self._tools()
+        level = {"roll": 0.0, "pitch": 0.0}
+        np.testing.assert_allclose(b._gravity_in_body_from_fc(level), [0, 0, 1],
+                                   atol=1e-9)
+        np.testing.assert_allclose(b._specific_force_in_body_from_fc(level),
+                                   [0, 0, -1], atol=1e-9)
+
+    def test_a_z_up_sensor_yields_a_flipped_z_row(self):
+        """The end-to-end sign check, in the exact geometry on this airframe.
+
+        The ESP32 reads +1 g on its z when the airframe is LEVEL, so its z
+        points up while FRD z points down: the map must carry sign -1 there.
+        The earlier bug produced +1, which the Mahony filter reads as being
+        upside down — and it duly converged to roll 161 deg on a level bench.
+        """
+        b = self._tools()
+        # Sensor mounted z-up and rotated 90 deg in the XY plane. NOTE det=+1:
+        # a mounting is a rotation, so flipping z forces a compensating change
+        # in x/y. A z flip with a plain 90 deg swap gives det=-1, which is a
+        # reflection and cannot be bolted to anything — the fit can never
+        # return one, and a test asserting it is testing an impossibility.
+        truth = np.array([[0.0, 1.0, 0.0],
+                          [1.0, 0.0, 0.0],
+                          [0.0, 0.0, -1.0]])
+        self.assertAlmostEqual(np.linalg.det(truth), 1.0, places=9)
+        rng = np.random.default_rng(3)
+        S = rng.normal(size=(400, 3))
+        S /= np.linalg.norm(S, axis=1, keepdims=True)
+        B = (truth @ S.T).T                       # what the FC's UP vector reads
+        U, _, Vt = np.linalg.svd(S.T @ B)
+        d = np.sign(np.linalg.det(Vt.T @ U.T))
+        M = Vt.T @ np.diag([1.0, 1.0, d]) @ U.T
+        rows, quality = b._snap_to_signed_permutation(M)
+        self.assertEqual(rows[2], (2, -1.0), "z row must be flipped for a z-up sensor")
+        self.assertEqual(rows[0], (1, 1.0), "FRD x must come from sensor y (the swap)")
+        self.assertEqual(rows[1], (0, 1.0), "FRD y must come from sensor x")
+        self.assertGreater(quality, 0.99)
+
+    def test_snap_quality_is_a_plain_float(self):
+        """A numpy scalar here took down the whole JSON state response."""
+        b = self._tools()
+        _, quality = b._snap_to_signed_permutation(np.eye(3))
+        self.assertIsInstance(quality, float)
+        self.assertNotIsInstance(quality, np.floating)
+
     def test_kabsch_recovers_a_known_mounting(self):
         """Full round trip: bolt the board at a known 90 deg rotation, find it."""
         b = self._tools()
