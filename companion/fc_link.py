@@ -126,6 +126,9 @@ class FCLink:
         self.override_bit: int | None = None
 
         self._sticks = dict(IDLE_STICKS)
+        # Arm intent, streamed every frame when companion arming is enabled.
+        # False is the resting state and everything forces it back here.
+        self._arm_cmd = False
         self._slock = threading.Lock()
         self._stop = threading.Event()
         self._rc_thread: threading.Thread | None = None
@@ -215,8 +218,15 @@ class FCLink:
             return
         self._stop.set()
         try:
+            # Explicitly DISARM in the last frame, not merely omit it. The
+            # override has no timeout, so the FC keeps applying whatever it
+            # last received — an omitted ARM channel leaves the previous HIGH
+            # in force, and this frame is what a SIGTERM or an atexit unwind
+            # leaves behind.
+            arm = False if self.cfg.channels.companion_arm else None
             self.msp.request(MSP_SET_RAW_RC,
-                             aetr_frame(**IDLE_STICKS, limits=self.limits),
+                             aetr_frame(**IDLE_STICKS, limits=self.limits,
+                                        arm=arm),
                              timeout=0.3)
         except Exception:
             pass
@@ -416,12 +426,47 @@ class FCLink:
         if self._rc_thread is None or not self._rc_thread.is_alive():
             self.stream_once()
 
-    def arm(self, on: bool = True):
-        raise PermissionError(
-            "the companion never arms this vehicle — ARM is on ch9 and belongs "
-            "to the pilot's transmitter (msp_override_channels_mask=15 means "
-            "aux channels are not overridable anyway)"
-        )
+    def arm(self, on: bool = True) -> None:
+        """Arm or disarm from the companion. OFF unless deliberately enabled.
+
+        This is a real capability now, but it is not "self-arming": a human
+        still initiates it, through software rather than the transmitter. The
+        distinction that matters is whether a person decided, not which switch
+        they touched.
+
+        Refuses unless BOTH are true, because either alone is a foot-gun:
+
+        * ``channels.companion_arm`` is set in the config. Arming is not
+          something a caller should be able to reach by accident.
+        * The pilot's override switch is ACTIVE. With it down the FC takes ARM
+          from the receiver anyway, so arming here would silently do nothing
+          and, worse, would leave a HIGH queued in our frame for whenever the
+          switch next goes up.
+
+        Disarming is always permitted and never refuses — a refusal on the way
+        DOWN is the one failure this must not have.
+        """
+        if not on:
+            with self._slock:
+                self._arm_cmd = False
+            log.warning("companion DISARM")
+            return
+        if not self.cfg.channels.companion_arm:
+            raise PermissionError(
+                "companion arming is disabled — ARM belongs to the pilot's "
+                "transmitter. Set channels.companion_arm and put the ARM "
+                "channel in msp_override_channels_mask to change that.")
+        if not self.override_active():
+            raise PermissionError(
+                "refusing to arm while the override switch is DOWN: the FC "
+                "would take ARM from the receiver regardless, and this would "
+                "queue a HIGH for whenever the switch next goes up")
+        if self._safe_mode or self.abort_reason:
+            raise PermissionError(
+                f"refusing to arm in safe mode: {self.abort_reason}")
+        with self._slock:
+            self._arm_cmd = True
+        log.warning("companion ARM requested")
 
     def stream_once(self) -> None:
         """Send exactly one override frame.
@@ -431,9 +476,13 @@ class FCLink:
         """
         with self._slock:
             sticks = dict(IDLE_STICKS) if self._safe_mode else dict(self._sticks)
+            # Disarm is the RESTING state. Safe mode and any abort force it
+            # low; nothing can leave it merely unset. See aetr_frame's `arm`.
+            arm = (self._arm_cmd and not self._safe_mode) \
+                if self.cfg.channels.companion_arm else None
         try:
             self.msp.request(MSP_SET_RAW_RC,
-                             aetr_frame(**sticks, limits=self.limits),
+                             aetr_frame(**sticks, limits=self.limits, arm=arm),
                              timeout=0.2)
             self.frames_sent += 1
         except MSPError as e:
@@ -494,6 +543,7 @@ class FCLink:
         self._safe_mode = True
         with self._slock:
             self._sticks.update(IDLE_STICKS)
+            self._arm_cmd = False
 
     def _watchdog(self) -> None:
         """Periodic readbacks while streaming. Any doubt stops the stream.
@@ -589,6 +639,20 @@ class FCLink:
                 bad.append(f"{name}={v} outside [{lo + tol}, {hi - tol}]")
         if (mask & (1 << 2)) and thr > self.limits.thr_cap + tol:
             bad.append(f"throttle={thr} above cap {self.limits.thr_cap}")
+        # ARM, when the companion is driving it. The same bypass this whole
+        # method exists to catch — anything in-process calling MSP_SET_RAW_RC
+        # directly — could stream ARM HIGH, and that is the worst thing it
+        # could do. So check the wire against our own intent rather than
+        # trusting that nothing else is writing. An armed aircraft that this
+        # code did not ask for is the abort, not a warning.
+        ai = self.channels.arm_index
+        if (self.channels.companion_arm and (mask & (1 << ai))
+                and len(rc) > ai):
+            with self._slock:
+                wanted = self._arm_cmd
+            fc_armed_cmd = rc[ai] >= self.channels.override_active_us
+            if fc_armed_cmd and not wanted:
+                bad.append(f"ARM={rc[ai]} on the wire but nothing asked to arm")
         if bad:
             self._abort(f"{ABORT_ENVELOPE}: " + "; ".join(bad)
                         + " — something bypassed set_stick()")

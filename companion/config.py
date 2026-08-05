@@ -72,6 +72,18 @@ class ChannelConfig:
     # nose-UP tilt means pitching the nose DOWN.
     roll_right_us: int = 2012       # roll stick full right
     nose_down_us: int = 2012        # pitch stick full forward
+    # Let the companion drive the ARM channel. OFF by default, and turning it
+    # on is only half the job — the FC's msp_override_channels_mask must also
+    # contain the ARM channel's bit (ch9 -> 1<<8 = 256, so mask 271 for
+    # ch1-4 + ch9). With the mask alone the companion streams ARM and the FC
+    # ignores it; with this alone the FC never sees it.
+    #
+    # ⚠️ This board's override has NO TIMEOUT, so whatever is streamed on the
+    # ARM channel is what the FC keeps applying. Every code path therefore
+    # sends ARM explicitly LOW rather than omitting it — see aetr_frame. The
+    # pilot's override switch remains the always-works cutout: dropping it
+    # returns ALL channels to the receiver, including ARM, which disarms.
+    companion_arm: bool = False
 
 
 @dataclass

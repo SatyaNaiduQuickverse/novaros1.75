@@ -11,12 +11,13 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from companion.config import Config  # noqa: E402
+from companion.config import Config, load  # noqa: E402
 from companion.fc_link import FCLink  # noqa: E402
 from companion.msp import (  # noqa: E402
     MSPError, MSP_MOTOR, MSP_RC, MSP_SET_RAW_RC, MSP_STATUS,
 )
-from companion.safety import (  # noqa: E402
+from companion.safety import (
+    ARM_LOW_US, IDX_ARM,  # noqa: E402
     ABORT_MOTOR_CAP, ABORT_OVERRIDE_RELEASED, ABORT_PILOT_DISARMED,
 )
 
@@ -478,3 +479,182 @@ class TestFailsafeHooks(unittest.TestCase):
         fc.close()
         fc.close()
         self.assertTrue(fc._closed)
+
+
+class TestCompanionArming(unittest.TestCase):
+    """Arming from code — a human still decides, via a button not a switch.
+
+    The hazard this is built around is specific to this board: the MSP override
+    has NO timeout, so whatever is streamed on the ARM channel is what the FC
+    keeps applying, forever. Disarm therefore has to be the RESTING state — the
+    value sent when nothing has asked for anything — rather than an event the
+    code has to remember. Every test below is a variation on that.
+    """
+
+    def _fc(self, companion_arm=True, override=True):
+        cfg = load()
+        cfg.channels.companion_arm = companion_arm
+        fc = FCLink.__new__(FCLink)
+        FCLink.__init__(fc, cfg)
+        fc.msp = None
+        fc._arm_cmd = False
+        fc._safe_mode = False
+        fc.abort_reason = None
+        fc.override_active = lambda: override
+        return fc
+
+    def test_disabled_by_default_in_the_dataclass(self):
+        from companion.config import ChannelConfig
+        self.assertFalse(ChannelConfig().companion_arm)
+
+    def test_arming_refuses_when_the_capability_is_off(self):
+        fc = self._fc(companion_arm=False)
+        with self.assertRaises(PermissionError):
+            fc.arm(True)
+        self.assertFalse(fc._arm_cmd)
+
+    def test_arming_refuses_while_the_override_switch_is_down(self):
+        """The FC would take ARM from the receiver anyway — and this would
+        queue a HIGH for whenever the switch next goes up."""
+        fc = self._fc(override=False)
+        with self.assertRaises(PermissionError):
+            fc.arm(True)
+        self.assertFalse(fc._arm_cmd)
+
+    def test_arming_refuses_in_safe_mode(self):
+        fc = self._fc()
+        fc._safe_mode = True
+        fc.abort_reason = "something already went wrong"
+        with self.assertRaises(PermissionError):
+            fc.arm(True)
+
+    def test_disarming_never_refuses(self):
+        """A refusal on the way DOWN is the one failure this must not have."""
+        for kw in ({"companion_arm": False}, {"override": False}):
+            fc = self._fc(**kw)
+            fc._arm_cmd = True
+            fc.arm(False)                      # must not raise
+            self.assertFalse(fc._arm_cmd)
+
+    def test_abort_drops_the_arm_request(self):
+        fc = self._fc()
+        fc._arm_cmd = True
+        fc._abort("link died")
+        self.assertFalse(fc._arm_cmd)
+
+    def test_arm_survives_nothing_it_should_not(self):
+        fc = self._fc()
+        fc.arm(True)
+        self.assertTrue(fc._arm_cmd)
+        fc._abort("pilot dropped the switch")
+        self.assertFalse(fc._arm_cmd, "an abort must disarm, not just idle")
+
+
+class TestArmFrameOnTheWire(unittest.TestCase):
+    """What actually reaches the FC, including on the paths nobody calls."""
+
+    def _spy(self, companion_arm=True):
+        cfg = load()
+        cfg.channels.companion_arm = companion_arm
+        fc = FCLink.__new__(FCLink)
+        FCLink.__init__(fc, cfg)
+        sent = []
+
+        class Spy:
+            def request(self_inner, cmd, payload=b"", timeout=None):
+                sent.append((cmd, payload))
+                return b""
+        fc.msp = Spy()
+        fc._arm_cmd = False
+        fc._safe_mode = False
+        fc.abort_reason = None
+        fc._closed = False
+        return fc, sent
+
+    @staticmethod
+    def _arm_of(payload):
+        n = len(payload) // 2
+        return struct.unpack(f"<{n}H", payload)[IDX_ARM] if n > IDX_ARM else None
+
+    def test_capability_off_never_lengthens_the_frame(self):
+        fc, sent = self._spy(companion_arm=False)
+        fc.stream_once()
+        self.assertEqual(len(sent[0][1]), 8)
+
+    def test_resting_state_streams_arm_low_every_frame(self):
+        fc, sent = self._spy()
+        fc.stream_once()
+        self.assertEqual(self._arm_of(sent[0][1]), ARM_LOW_US)
+
+    def test_safe_mode_forces_arm_low_even_if_requested(self):
+        """Belt and braces: _abort clears the flag, and this ignores it anyway."""
+        fc, sent = self._spy()
+        fc._arm_cmd = True
+        fc._safe_mode = True
+        fc.stream_once()
+        self.assertEqual(self._arm_of(sent[0][1]), ARM_LOW_US)
+
+    def test_the_final_failsafe_frame_disarms_explicitly(self):
+        """This is the frame a SIGTERM or an atexit unwind leaves behind.
+
+        It must SAY disarmed, not merely omit ARM — an omitted channel leaves
+        the FC applying the previous HIGH, forever, on this firmware.
+        """
+        fc, sent = self._spy()
+        fc._arm_cmd = True
+        fc._failsafe_idle()
+        self.assertEqual(self._arm_of(sent[-1][1]), ARM_LOW_US)
+
+
+class TestArmTripwire(unittest.TestCase):
+    """The wire check must police ARM once the companion can drive it.
+
+    Everything in safety.py is cooperative — anything sharing this process can
+    call MSP_SET_RAW_RC directly and bypass every clamp. Streaming ARM HIGH is
+    the worst thing such a bypass could do, so the watchdog compares the wire
+    against our own intent rather than trusting that nothing else is writing.
+    """
+
+    def _fc(self, rc, arm_cmd=False, mask=271, companion_arm=True):
+        cfg = load()
+        cfg.channels.override_mask = mask
+        cfg.channels.companion_arm = companion_arm
+        fc = FCLink.__new__(FCLink)
+        FCLink.__init__(fc, cfg)
+        fc.msp = None
+        fc._arm_cmd = arm_cmd
+        fc._safe_mode = False
+        fc.abort_reason = None
+        fc.rc = lambda: rc
+        return fc
+
+    @staticmethod
+    def _rc(arm_us):
+        return [1500, 1500, 1500, 1000, 1000, 1000, 1000, 2000, arm_us]
+
+    def test_aborts_when_the_wire_is_armed_and_nothing_asked(self):
+        fc = self._fc(self._rc(2000), arm_cmd=False)
+        fc._verify_envelope()
+        self.assertIsNotNone(fc.abort_reason)
+        self.assertIn("ARM", fc.abort_reason)
+
+    def test_quiet_when_the_wire_matches_our_intent(self):
+        fc = self._fc(self._rc(2000), arm_cmd=True)
+        fc._verify_envelope()
+        self.assertIsNone(fc.abort_reason)
+
+    def test_quiet_when_disarmed_on_both_sides(self):
+        fc = self._fc(self._rc(1000), arm_cmd=False)
+        fc._verify_envelope()
+        self.assertIsNone(fc.abort_reason)
+
+    def test_silent_when_arm_is_not_in_the_mask(self):
+        """Mask 15: ch9 carries the PILOT's switch, and they may arm freely."""
+        fc = self._fc(self._rc(2000), arm_cmd=False, mask=15)
+        fc._verify_envelope()
+        self.assertIsNone(fc.abort_reason)
+
+    def test_silent_when_the_capability_is_off(self):
+        fc = self._fc(self._rc(2000), arm_cmd=False, companion_arm=False)
+        fc._verify_envelope()
+        self.assertIsNone(fc.abort_reason)

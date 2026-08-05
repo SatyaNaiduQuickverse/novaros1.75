@@ -7,7 +7,8 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from companion.safety import (  # noqa: E402
+from companion.safety import (
+    ARM_HIGH_US, ARM_LOW_US, AUX_NEUTRAL_US, IDX_ARM,  # noqa: E402
     IDX_PITCH, IDX_ROLL, IDX_THROTTLE, IDX_YAW, Limits, aetr_frame,
 )
 
@@ -80,3 +81,50 @@ class TestClamps(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestArmChannelFraming(unittest.TestCase):
+    """Packing ARM changes the frame length, and that IS the safety property.
+
+    With `arm=None` the ARM channel is not in the frame at all, so it cannot be
+    set by accident and the FC keeps taking ARM from the receiver. Only an
+    explicit request lengthens the frame.
+    """
+
+    def test_default_frame_has_no_arm_channel(self):
+        f = aetr_frame(1500, 1500, 1500, 1000, Limits.bench())
+        self.assertEqual(len(f), 8, "default frame must stay 4 channels")
+
+    def test_arm_false_packs_nine_channels_with_arm_low(self):
+        f = aetr_frame(1500, 1500, 1500, 1000, Limits.bench(), arm=False)
+        ch = struct.unpack("<9H", f)
+        self.assertEqual(len(ch), 9)
+        self.assertEqual(ch[IDX_ARM], ARM_LOW_US)
+
+    def test_arm_true_packs_arm_high(self):
+        f = aetr_frame(1500, 1500, 1500, 1000, Limits.bench(), arm=True)
+        self.assertEqual(struct.unpack("<9H", f)[IDX_ARM], ARM_HIGH_US)
+
+    def test_only_literal_true_arms(self):
+        """A NaN, a string, a 1, a half-built object — all mean DISARMED.
+
+        The only safe reading of an unclear intention on this channel is a
+        refusal, so this is identity against True, not truthiness.
+        """
+        for sketchy in (1, "yes", [1], float("nan"), object()):
+            f = aetr_frame(1500, 1500, 1500, 1000, Limits.bench(), arm=sketchy)
+            self.assertEqual(struct.unpack("<9H", f)[IDX_ARM], ARM_LOW_US,
+                             f"{sketchy!r} must not arm")
+
+    def test_arming_does_not_relax_the_stick_clamps(self):
+        f = aetr_frame(9999, -9999, 9999, 9999, Limits.bench(), arm=True)
+        ch = struct.unpack("<9H", f)
+        self.assertEqual(ch[IDX_THROTTLE], Limits.bench().thr_cap)
+        self.assertEqual(ch[IDX_ROLL], 1500 + Limits.bench().max_deflect)
+
+    def test_padding_channels_are_neutral_not_stale(self):
+        """ch5-8 are padded, so an enabled mask bit there cannot pick up junk."""
+        ch = struct.unpack("<9H", aetr_frame(1500, 1500, 1500, 1000,
+                                             Limits.bench(), arm=False))
+        for i in range(4, IDX_ARM):
+            self.assertEqual(ch[i], AUX_NEUTRAL_US)
