@@ -1228,7 +1228,7 @@ def t_motors(a):
             if fc.abort_reason:
                 break
             print(f"  > {name}")
-            rec.event("move", name=name)
+            rec.event("move", move=name)
             t1 = time.monotonic()
             while (el := time.monotonic() - t1) < dur:
                 if name == "throttle ramp":
@@ -1240,7 +1240,7 @@ def t_motors(a):
                     break
                 time.sleep(0.05)
             mo = fc.motors()
-            rec.event("move_end", name=name, motors=mo, rc=fc.rc()[:4])
+            rec.event("move_end", move=name, motors=mo, rc=fc.rc()[:4])
             print(f"      motors {mo}   rc {fc.rc()[:4]}")
 
         if fc.abort_reason:

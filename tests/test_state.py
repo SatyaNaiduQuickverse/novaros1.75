@@ -174,3 +174,41 @@ class TestConfig(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestBenchRecorderKwargs(unittest.TestCase):
+    """`event(name, **kw)` collides with a kw called `name`.
+
+    The motors harness called `rec.event("move", name=name)`, which is a plain
+    TypeError on the FIRST move of the sequence. It shipped because the ACRO
+    gate failed before reaching the loop every previous run, so everything past
+    that gate had never executed once — on a test that arms the aircraft.
+    A gate that always fails hides the code behind it.
+    """
+
+    def _rec(self):
+        import tempfile
+        sys.path.insert(0, os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"))
+        from bringup import BenchRecorder
+        return BenchRecorder("unittest", fc=None, run_dir=tempfile.mkdtemp())
+
+    def test_event_accepts_the_kwargs_the_motor_sequence_uses(self):
+        rec = self._rec()
+        try:
+            rec.event("move", move="ROLL RIGHT")
+            rec.event("move_end", move="ROLL RIGHT", motors=[1040] * 4,
+                      rc=[1600, 1500, 1500, 1060])
+            rec.event("armed", wait_s=1.2, motors=[1043] * 4)
+            rec.event("stream_start", limits="bench")
+        finally:
+            rec.close()
+
+    def test_a_kwarg_called_name_still_collides(self):
+        """Pin the trap itself, so nobody reintroduces it elsewhere."""
+        rec = self._rec()
+        try:
+            with self.assertRaises(TypeError):
+                rec.event("move", name="ROLL RIGHT")
+        finally:
+            rec.close()
