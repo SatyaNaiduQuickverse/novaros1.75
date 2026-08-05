@@ -456,6 +456,17 @@ class FCLink:
                 "companion arming is disabled — ARM belongs to the pilot's "
                 "transmitter. Set channels.companion_arm and put the ARM "
                 "channel in msp_override_channels_mask to change that.")
+        ai = self.cfg.channels.arm_index
+        if not (self.cfg.channels.override_mask & (1 << ai)):
+            # Fail loudly rather than silently doing nothing. With the config
+            # flag set but the ARM channel absent from the mask, the FC never
+            # sees what we stream on it — arm() would "succeed", the aircraft
+            # would stay disarmed, and the caller would have no idea why.
+            raise PermissionError(
+                f"companion_arm is set but ch{ai + 1} is not in "
+                f"msp_override_channels_mask ({self.cfg.channels.override_mask}) "
+                f"— the FC takes ARM from the receiver, so this would silently "
+                f"do nothing. Mask needs bit {ai} (e.g. 271 for ch1-4 + ch9).")
         if not self.override_active():
             raise PermissionError(
                 "refusing to arm while the override switch is DOWN: the FC "

@@ -201,5 +201,5 @@ imu32:
 # companion throttle authority.
 module:
   so_path: companion/command_module.cpython-313-aarch64-linux-gnu.so
-  sha256: f52b7f8f91c34c66a78cea12be1babdd2c426d8ca51238bb083ef274ddfad1cd
+  sha256: bf6d045b7976c3ea8abed1fcaa1f06567cf8b70ad6238c4f5f42957048e07f4c
   verify_on_load: true

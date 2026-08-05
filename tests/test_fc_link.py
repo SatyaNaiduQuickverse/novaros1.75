@@ -491,8 +491,11 @@ class TestCompanionArming(unittest.TestCase):
     code has to remember. Every test below is a variation on that.
     """
 
-    def _fc(self, companion_arm=True, override=True):
+    def _fc(self, companion_arm=True, override=True, mask=271):
         cfg = load()
+        # Explicit mask: arming needs the ARM channel in it, and the repo
+        # config's value moves with whatever the airframe is set to today.
+        cfg.channels.override_mask = mask
         cfg.channels.companion_arm = companion_arm
         fc = FCLink.__new__(FCLink)
         FCLink.__init__(fc, cfg)

@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SO = os.path.join(REPO, "companion",
                   "command_module.cpython-313-aarch64-linux-gnu.so")
-PINNED_SHA = "f52b7f8f91c34c66a78cea12be1babdd2c426d8ca51238bb083ef274ddfad1cd"
+PINNED_SHA = "bf6d045b7976c3ea8abed1fcaa1f06567cf8b70ad6238c4f5f42957048e07f4c"
 
 
 def q_roll(deg):
@@ -83,19 +83,34 @@ class TestDeliveredModule(unittest.TestCase):
         imu.q = q_roll(-15.0)
         self.assertEqual(g.step(0.02)["roll"], 1560)
 
-    def test_thrust_compensation_fingerprint(self):
-        """Computed throttle rises with tilt — and exceeds our 1100 bench cap."""
-        fc, imu, g = self.build()
-        for tilt, expect in ((0, 1224), (30, 1252), (45, 1298)):
-            imu.q = q_roll(float(tilt))
-            self.assertEqual(g.step(0.0)["throttle"], expect)
+    def test_emits_no_throttle_at_any_tilt(self):
+        """The delivered build is attitude-only — throttle is not in the dict.
 
-    def test_computed_throttle_exceeds_bench_cap(self):
-        """Documents WHY the returned dict must never be applied raw."""
-        from companion.safety import Limits
+        The previous build computed a thrust-vector throttle (1224 level, 1298
+        at 45 deg) and exposed it in the returned dict. That was ABOVE the 1100
+        bench cap, so the standing rule was that the dict must never be applied
+        raw. This build removes the question: under mask 11 the pilot owns ch3,
+        and the module does not compute a throttle at all.
+
+        Asserted across tilt because "absent at zero" would not be the claim
+        that matters — the old build's throttle Rose with tilt.
+        """
         fc, imu, g = self.build()
-        imu.q = q_roll(0.0)
-        self.assertGreater(g.step(0.0)["throttle"], Limits.bench().thr_cap)
+        for tilt in (0, 15, 30, 45, -30):
+            imu.q = q_roll(float(tilt))
+            out = g.step(0.0)
+            self.assertNotIn("throttle", out, f"throttle appeared at {tilt} deg")
+
+    def test_never_touches_the_throttle_channel_on_the_fc(self):
+        """Not just absent from the dict — never passed to set_stick either."""
+        fc, imu, g = self.build()
+        for tilt in (0, 20, -20, 40):
+            imu.q = q_roll(float(tilt))
+            g.step(0.0)
+        for frame in fc.sent:
+            self.assertNotIn("throttle", frame,
+                             "the module must leave ch3 to the pilot")
+        self.assertTrue(fc.sent, "the module commanded nothing at all")
 
     def test_never_sends_throttle(self):
         fc, imu, g = self.build()

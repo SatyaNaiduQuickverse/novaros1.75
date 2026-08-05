@@ -76,6 +76,30 @@ while being backwards.
 - **Say "camera pointing at the ceiling", never "nose up"** — the airframe and
   the stick are opposite, since a multirotor pitches nose-DOWN to fly forward.
 
+## Companion arming — built, tested, currently OFF
+
+Wanted again later. It is NOT a rebuild — the capability, its guards and its
+tests are all in the tree. Re-enabling is two switches, and both are needed:
+
+```bash
+python3 tools/fc_cli.py set msp_override_channels_mask 271   # ch1-4 + ch9
+# then in config/vehicle.yaml:  channels.companion_arm: true
+```
+
+With the mask alone the FC ignores what we stream on ARM; with the flag alone
+it never sees it. `arm()` refuses loudly in either half-configured state rather
+than silently doing nothing.
+
+Verified end to end under 271: the companion armed itself, ran all six attitude
+axes, and disarmed itself. It is off now only because mask 11 (pilot keeps
+throttle) is the current configuration and 11 has no ch9 bit.
+
+**The design constraint, which is what makes it safe:** disarm is the RESTING
+state, not an event. `aetr_frame(arm=None)` omits ARM entirely; `arm=False`
+sends it explicitly LOW; only a literal `True` arms. Every exit path — abort,
+safe mode, SIGTERM, atexit — sends ARM low, because this board's override has
+no timeout and an omitted channel leaves the previous HIGH in force forever.
+
 ## Verifying claims
 
 - **Do not trust a status report over the tree.** A handoff message once
