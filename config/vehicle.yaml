@@ -6,7 +6,7 @@
 # Companion: Raspberry Pi 5, FC on USB-C (VCP). Receiver: ELRS/CRSF on UART2.
 #
 # Required FC configuration, saved to EEPROM:
-#   set msp_override_channels_mask = 15     # binary 1111 = channels 1-4 only
+#   set msp_override_channels_mask = 11     # binary 1011 = ch1,2,4; pilot keeps throttle
 #   aux <slot> 50 3 1700 2100 0 0           # box id 50 = MSP OVERRIDE on ch8
 
 fc:
@@ -51,12 +51,20 @@ channels:
   angle_index: 4        # ch5  — ANGLE mode, active when the switch is LOW
   override_active_us: 1700
   # MUST match msp_override_channels_mask on the FC — change both together.
-  #   15 (0b1111) companion owns roll/pitch/yaw/throttle  <- current
-  #   11 (0b1011) companion owns roll/pitch/yaw; PILOT keeps throttle
-  # Verified against the firmware 2026-08-04 with: bringup authority
-  # A mismatch is not cosmetic — the wire-envelope check would police the
+  #   15 (0b1111) companion owns roll/pitch/yaw/throttle
+  #   11 (0b1011) companion owns roll/pitch/yaw; PILOT keeps throttle  <- current
+  # ✅ CHANGED 15 -> 11 on 2026-08-05 and READ BACK FROM THE FIRMWARE, not
+  # assumed: tools/fc_cli.py get msp_override_channels_mask -> 11.
+  # Until now this was only ever inferred behaviourally. Betaflight does NOT
+  # implement MSP2_COMMON_SETTING (0x1003) — measured, it returns a well-formed
+  # $X! error frame — so settings are reachable only through the CLI.
+  # 11 matters for safety: the pilot keeps ch3, so chopping throttle is an
+  # always-works cutout that does not depend on the companion behaving. It also
+  # retires the "omitting throttle in set_stick freezes it" trap, since the
+  # companion no longer owns that channel at all.
+  # A mismatch here is not cosmetic — the wire-envelope check would police the
   # wrong channels and can abort the stream on the pilot's own throttle.
-  override_mask: 15
+  override_mask: 11
   # ✅ MEASURED 2026-08-05 from the pilot's transmitter, override switch DOWN,
   # each stick held at full deflection with 0 us of jitter:
   #   pitch stick FORWARD (the fly-forward input, so nose DOWN) -> 2012

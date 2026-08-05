@@ -37,6 +37,13 @@ MSP_MODE_RANGES = 34
 MSP_BOXNAMES = 116
 MSP_BOXIDS = 119
 MSP_SET_RAW_RC = 200
+MSP_EEPROM_WRITE = 250
+
+# MSP v2. Needed only for the settings API — Betaflight exposes every CLI
+# variable by NAME through these, which is the difference between verifying a
+# setting and assuming it. The v1 client above is otherwise sufficient.
+MSP2_COMMON_SETTING = 0x1003
+MSP2_COMMON_SET_SETTING = 0x1004
 
 # Permanent box ids — stable across firmware builds, unlike the bit positions
 # inside MSP_STATUS's mode flags, which follow this build's box list order.
@@ -107,6 +114,94 @@ class MSP:
         if size > 254:
             raise MSPError("outgoing jumbo frames are not needed here")
         return b"$M<" + bytes([size, cmd]) + payload + bytes([self._crc(size, cmd, payload)])
+
+    @staticmethod
+    def _crc8_dvb_s2(crc: int, b: int) -> int:
+        crc ^= b
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0xD5) & 0xFF if crc & 0x80 else (crc << 1) & 0xFF
+        return crc
+
+    def _encode_v2(self, function: int, payload: bytes = b"") -> bytes:
+        """$X< frame. Different header, different CRC — not a v1 variant."""
+        head = struct.pack("<BHH", 0, function, len(payload))
+        crc = 0
+        for b in head + payload:
+            crc = self._crc8_dvb_s2(crc, b)
+        return b"$X<" + head + payload + bytes([crc])
+
+    def _take_frame_v2(self):
+        """Pop one v2 frame. Returns (function, payload, is_error) or None."""
+        while True:
+            cands = [p for p in (self._rx.find(b"$X>"), self._rx.find(b"$X!")) if p >= 0]
+            if not cands:
+                if len(self._rx) > 2:
+                    self._rx = self._rx[-2:]
+                return None
+            i = min(cands)
+            if i:
+                self._rx = self._rx[i:]
+                continue
+            is_error = self._rx[1:3] == b"X!"
+            if len(self._rx) < 8:
+                return None
+            _, function, size = struct.unpack("<BHH", self._rx[3:8])
+            end = 8 + size + 1
+            if len(self._rx) < end:
+                return None
+            payload = self._rx[8:end - 1]
+            crc = 0
+            for b in self._rx[3:end - 1]:
+                crc = self._crc8_dvb_s2(crc, b)
+            got = self._rx[end - 1]
+            self._rx = self._rx[end:]
+            if got != crc:
+                self.crc_errors += 1
+                continue
+            self.rx_frames += 1
+            return function, payload, is_error
+
+    def request_v2(self, function: int, payload: bytes = b"",
+                   timeout: float | None = None) -> bytes:
+        deadline = time.time() + (self.timeout if timeout is None else timeout)
+        with self._lock:
+            self._rx = b""
+            try:
+                self.ser.reset_input_buffer()
+            except (serial.SerialException, OSError):
+                pass
+            self._write(self._encode_v2(function, payload))
+            while time.time() < deadline:
+                self._read_some()
+                while True:
+                    frame = self._take_frame_v2()
+                    if frame is None:
+                        break
+                    fn, rpayload, is_error = frame
+                    if is_error and fn == function:
+                        raise MSPError(f"FC returned an error frame for v2 fn "
+                                       f"0x{function:04X}")
+                    if fn == function:
+                        return rpayload
+        self.timeouts += 1
+        raise MSPTimeout(f"no reply for v2 fn 0x{function:04X} within "
+                         f"{self.timeout:.2f}s")
+
+    def get_setting(self, name: str) -> bytes:
+        """Raw bytes of a Betaflight CLI setting, by name.
+
+        Length tells you the width — do not assume; msp_override_channels_mask
+        has been u8 on some targets and u16 on others.
+        """
+        return self.request_v2(MSP2_COMMON_SETTING, name.encode() + b"\x00")
+
+    def set_setting(self, name: str, value: bytes) -> None:
+        """Write a setting. NOT persisted until save_settings()."""
+        self.request_v2(MSP2_COMMON_SET_SETTING, name.encode() + b"\x00" + value)
+
+    def save_settings(self) -> None:
+        """Commit to EEPROM. The FC reboots; reconnect afterwards."""
+        self.send(MSP_EEPROM_WRITE)
 
     def _take_frame(self):
         """Pop one complete frame from the rx buffer.
