@@ -29,7 +29,9 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from companion.config import load                        # noqa: E402
+import pathlib                                            # noqa: E402
+
+from companion.config import load, DEFAULT_CONFIG         # noqa: E402
 from companion.msp import MSP, resolve_port              # noqa: E402
 
 OK, BAD, WARN = "  [ OK ]", "  [FAIL]", "  [WARN]"
@@ -88,12 +90,84 @@ def cli_session(port, baud, lines, settle=0.45):
     return out
 
 
+def _readback_mask(cfg):
+    """What the FC says the mask is, right now. Source of truth."""
+    port = resolve_port(cfg.fc.port)
+    txt = cli_session(port, cfg.fc.baud, ["get msp_override_channels_mask", "exit"])
+    for ln in txt.splitlines():
+        ln = ln.strip()
+        if ln.startswith("msp_override_channels_mask") and "=" in ln:
+            return int(ln.split("=")[1].strip())
+    raise RuntimeError("the FC did not report the mask back")
+
+
+def _set_mask(a):
+    cfg = load()
+    want = int(a.value)
+    print(WARN, f"writing msp_override_channels_mask = {want}, then rebooting")
+    cli_session(resolve_port(cfg.fc.port), cfg.fc.baud,
+                [f"set msp_override_channels_mask = {want}", "save"], settle=0.6)
+    time.sleep(4.0)                       # the save reboots the FC
+    got = _readback_mask(cfg)
+    print(f"\n  FC reports: {got}  (0b{got:b})")
+    if got != want:
+        print(BAD, f"the FC has {got}, not {want} — config NOT touched")
+        return 1
+
+    path = cfg.source or DEFAULT_CONFIG
+    lines = pathlib.Path(path).read_text().splitlines(keepends=True)
+    hit = False
+    for i, ln in enumerate(lines):
+        if ln.lstrip().startswith("override_mask:") and not ln.lstrip().startswith("#"):
+            lines[i] = f"  override_mask: {got}\n"
+            hit = True
+            break
+    if not hit:
+        print(BAD, f"no override_mask line in {path} — set it by hand to {got}")
+        return 1
+    pathlib.Path(path).write_text("".join(lines))
+    print(f"  {path}: override_mask -> {got}")
+
+    bits = {0: "ch1 roll", 1: "ch2 pitch", 2: "ch3 throttle", 3: "ch4 yaw",
+            8: "ch9 ARM"}
+    print()
+    for b, nm in bits.items():
+        print("   %-14s %s" % (nm, "COMPANION" if got >> b & 1 else "pilot"))
+    if not (got & (1 << 2)):
+        print("\n  " + OK.strip() + " the pilot keeps throttle — chopping it is an "
+              "always-works cutout")
+    else:
+        print("\n  " + WARN.strip() + " the companion owns throttle: the pilot's "
+              "stick is INERT and the")
+        print("         override switch is the only cutout. Command throttle "
+              "every tick.")
+    if load().channels.companion_arm and not (got & (1 << 8)):
+        print("  " + WARN.strip() + " companion_arm is set but ch9 is not in the "
+              "mask — arm() will refuse.")
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("action", choices=["get", "set"])
-    ap.add_argument("name")
+    ap.add_argument("action", choices=["get", "set", "set-mask"])
+    ap.add_argument("name", nargs="?")
     ap.add_argument("value", nargs="?")
     a = ap.parse_args()
+    if a.action == "set-mask":
+        # One value, one truth. The mask lives on the FC AND in vehicle.yaml,
+        # and a mismatch is not cosmetic: the wire watchdog uses the config
+        # copy to decide which channels to police, so a stale value makes it
+        # judge the PILOT's throttle against the companion's cap and abort the
+        # stream the moment they advance it. This writes the FC, reads the FC
+        # BACK, and derives the config from what the hardware actually reports
+        # — so the two cannot drift, because one is no longer typed alongside
+        # the other.
+        if a.name is None:
+            print(BAD, "set-mask needs a value, e.g. 15")
+            return 1
+        a.value, a.name = a.name, "msp_override_channels_mask"
+        a.action = "set"
+        return _set_mask(a)
 
     cfg = load()
     port = resolve_port(cfg.fc.port)
