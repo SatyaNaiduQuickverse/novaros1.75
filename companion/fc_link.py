@@ -560,7 +560,18 @@ class FCLink:
             if armed and override:
                 self._engaged = True
             elif self._engaged:
-                self._abort(ABORT_PILOT_DISARMED if not armed else ABORT_OVERRIDE_RELEASED)
+                # Say WHO disarmed. Since the companion can arm, "pilot
+                # disarmed" is sometimes a lie — and a log that misattributes
+                # the cause is worse than no log, because it sends the next
+                # person looking at the transmitter.
+                if armed:
+                    reason = ABORT_OVERRIDE_RELEASED
+                else:
+                    with self._slock:
+                        ours = self.cfg.channels.companion_arm and not self._arm_cmd
+                    reason = ("disarmed by the companion" if ours
+                              else ABORT_PILOT_DISARMED)
+                self._abort(reason)
                 return
             if armed:
                 mo = self.motors()

@@ -98,6 +98,12 @@ channels:
   # nothing asked. See companion/safety.py aetr_frame(arm=...).
   # The pilot's override switch is still the always-works cutout: dropping it
   # returns ALL channels to the receiver, ARM included, which disarms.
+  # ✅ EXERCISED END TO END 2026-08-05: `bringup motors --self-arm`. The
+  # companion armed itself, ran all six attitude axes, and disarmed itself;
+  # the operator touched nothing. Motor response was IDENTICAL to the
+  # pilot-armed run — ROLL RIGHT M3,M4 / ROLL LEFT M1,M2 / PITCH FWD M1,M3
+  # (rear, nose down) / PITCH BACK M2,M4 / YAW RIGHT M2,M3 / YAW LEFT M1,M4.
+  # Two arming paths, one mixer response.
   companion_arm: true
   # ✅ MEASURED 2026-08-05 from the pilot's transmitter, override switch DOWN,
   # each stick held at full deflection with 0 us of jitter:
