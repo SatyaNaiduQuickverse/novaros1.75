@@ -59,8 +59,16 @@ the bottom.
 
 ```bash
 git clone <repo> ~/novaros1.75 && cd ~/novaros1.75
-pip install -r requirements.txt
-python3 tools/find_fc.py
+sudo apt install -y python3-serial python3-numpy python3-yaml   # faster than pip on a Pi
+python3 tools/provision.py            # deps, both boards, FC config, streaming
+```
+
+`provision.py` checks everything in one pass and tells you exactly what is
+missing. Re-run it after each fix. It writes nothing to the FC — see the note
+under the restore step below.
+
+```bash
+python3 tools/find_fc.py              # measure this board's MSP ceiling
 ```
 
 - [ ] Board identified, MSP OVERRIDE present
@@ -69,6 +77,16 @@ python3 tools/find_fc.py
 
 Restore the FC configuration: open Betaflight Configurator → CLI, paste
 `config/fc_diff_all.txt`, then `save`.
+
+> **Why this stays manual.** Pushing the dump from a plain serial session was
+> tried and abandoned. It contains commands — `defaults`, `serial` — that
+> reinitialise the FC's USB port, so the handle dies mid-push with EIO and the
+> rest is never sent. Measured twice, dying 69 commands in both times. Both
+> attempts happened to be harmless only because `save` had not run either,
+> leaving the reset in RAM for the reboot to discard — luck, not design.
+> Configurator does it reliably in thirty seconds over a transport that
+> survives the reinit. `provision.py` reports exactly what differs, so you know
+> whether this step is even needed.
 
 - [ ] Aux bindings present: ARM ch9, ANGLE ch5, HEADFREE ch7, MSP OVERRIDE ch8
 - [ ] `msp_override_channels_mask` as intended (11 = pilot keeps throttle)
@@ -90,12 +108,17 @@ python3 -m tools.bringup preflight
 ## Phase 2 — ESP32 IMU bridge
 
 ```bash
-python3 -m venv --system-site-packages .venv-esp
-.venv-esp/bin/pip install esptool mpremote
 curl -LO https://micropython.org/resources/firmware/ESP32_GENERIC_C6-<ver>.bin
-.venv-esp/bin/esptool --chip esp32c6 --port <esp-by-id> write-flash 0x0 ESP32_GENERIC_C6-<ver>.bin
-.venv-esp/bin/mpremote connect <esp-by-id> cp esp32/main.py :main.py
+python3 tools/provision.py --flash-esp32 ESP32_GENERIC_C6-<ver>.bin
 ```
+
+That builds `.venv-esp` if needed, flashes MicroPython, deploys
+`esp32/main.py`, resets the board and confirms it streams. Drop the `.bin`
+argument to redeploy `main.py` only.
+
+> If the deploy times out, the firmware already on the board cannot be
+> interrupted while streaming — see `docs/ESP32_BRIDGE_FAULTS.md`. Reflash with
+> the `.bin` to get past it.
 
 - [ ] `WHO_AM_I` is 0x70 or 0x71 (the bridge raises otherwise)
 - [ ] Streaming: `python3 -m tools.bringup imu32` shows 200 Hz, 0 drops
