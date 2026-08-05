@@ -64,6 +64,14 @@ channels:
   # companion no longer owns that channel at all.
   # A mismatch here is not cosmetic — the wire-envelope check would police the
   # wrong channels and can abort the stream on the pilot's own throttle.
+  # ✅ VERIFIED BEHAVIOURALLY 2026-08-05 with `bringup authority`, override up,
+  # disarmed. The companion streamed distinctive values and the FC was asked
+  # what it actually used:
+  #   companion asked  roll 1560  pitch 1440  yaw 1530  throttle 1080
+  #   FC actually used roll 1560  pitch 1440  yaw 1530  throttle  989  <- PILOT
+  # The companion demanded 1080 on throttle and was IGNORED. Observed mask 11,
+  # config mask 11. That is the cutout working: the pilot's throttle now
+  # overrides the companion by firmware, not by the companion cooperating.
   override_mask: 11
   # ✅ MEASURED 2026-08-05 from the pilot's transmitter, override switch DOWN,
   # each stick held at full deflection with 0 us of jitter:
