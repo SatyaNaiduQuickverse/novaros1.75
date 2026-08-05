@@ -1155,11 +1155,17 @@ def t_motors(a):
         if not fc.override_active():
             print(BAD, f"override not active — flip ch{ch.override_index+1} UP")
             return 1
-        if not (ch.override_mask & 0b100):
-            print(BAD, "override_mask excludes throttle (ch3) — the companion "
-                       "cannot drive the motors. Set mask 15, or have the pilot "
-                       "hold throttle.")
-            return 1
+        pilot_throttle = not (ch.override_mask & 0b100)
+        if pilot_throttle:
+            # Mask 11: ch3 belongs to the pilot, by firmware. This is now the
+            # standing configuration, so the harness runs attitude-only rather
+            # than refusing — the pilot supplies and holds the throttle, which
+            # doubles as the cutout. Throttle is still sent every tick and
+            # still clamped; the FC simply ignores it.
+            print(WARN, "mask %d — the PILOT owns throttle. The companion will "
+                        "command attitude only." % ch.override_mask)
+            print("       You must hold a small throttle for the motors to turn,"
+                  " and chopping it stops them regardless of anything here.")
         boxes = fc.active_boxes()
         if not fc.is_acro():
             lvl = ", ".join(sorted({"ANGLE", "HORIZON"} & boxes))
@@ -1197,7 +1203,14 @@ def t_motors(a):
         print(OK, f"ARMED. idle motors {fc.motors()}")
         print("    (flip the override switch DOWN at any moment to take control back)")
 
-        for name, dur, sticks in MOTOR_MOVES:
+        moves = MOTOR_MOVES
+        if pilot_throttle:
+            # Drop the ramp (the pilot supplies throttle) and neutralise ours in
+            # every remaining phase, so what this sends can never be confused
+            # with what actually flew the motors.
+            moves = [(n, t, (dict(k, throttle=1000) if k else None))
+                     for n, t, k in MOTOR_MOVES if n != "throttle ramp"]
+        for name, dur, sticks in moves:
             if fc.abort_reason:
                 break
             print(f"  > {name}")
