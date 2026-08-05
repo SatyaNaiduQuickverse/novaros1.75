@@ -51,8 +51,9 @@ channels:
   angle_index: 4        # ch5  — ANGLE mode, active when the switch is LOW
   override_active_us: 1700
   # MUST match msp_override_channels_mask on the FC — change both together.
-  #   15 (0b1111) companion owns roll/pitch/yaw/throttle  <- current
-  #   11 (0b1011) companion owns roll/pitch/yaw; PILOT keeps throttle
+  #   15  (0b0000_1111) companion owns roll/pitch/yaw/throttle
+  #   11  (0b0000_1011) companion owns roll/pitch/yaw; PILOT keeps throttle
+  #   271 (0b1_0000_1111) as 15, PLUS ch9 ARM  <- current
   # ⚠️ CHANGED BACK 11 -> 15 on 2026-08-05 at the operator's direction: the
   # companion needs throttle for an autonomous engagement, so 11 was only ever
   # right for the attitude-only self-level module.
@@ -82,7 +83,22 @@ channels:
   # The companion demanded 1080 on throttle and was IGNORED. Observed mask 11,
   # config mask 11. That is the cutout working: the pilot's throttle now
   # overrides the companion by firmware, not by the companion cooperating.
-  override_mask: 15
+  override_mask: 271
+  # ✅ ARM ADDED TO THE MASK 2026-08-05 at the operator's direction, so arming
+  # can be a button in software rather than a switch on the transmitter. A
+  # human still decides; only the input device changes.
+  # 🔑 MEASURED immediately after, before enabling anything: with mask 271 and
+  # the override UP, ch9 read 885 — the FC's default for an override slot
+  # nothing has written, and far below the 1700 arming band. So putting ARM in
+  # the mask does NOT arm the aircraft on its own. Confirmed disarmed, motors
+  # 1000. ch5-8 still read 2000 from the receiver, exactly as the mask says.
+  # ⚠️ The override has NO TIMEOUT, so once we stream ARM the FC keeps applying
+  # whatever we last sent. Every path therefore sends ARM explicitly LOW rather
+  # than omitting it, and the wire watchdog aborts if the FC is armed when
+  # nothing asked. See companion/safety.py aetr_frame(arm=...).
+  # The pilot's override switch is still the always-works cutout: dropping it
+  # returns ALL channels to the receiver, ARM included, which disarms.
+  companion_arm: true
   # ✅ MEASURED 2026-08-05 from the pilot's transmitter, override switch DOWN,
   # each stick held at full deflection with 0 us of jitter:
   #   pitch stick FORWARD (the fly-forward input, so nose DOWN) -> 2012

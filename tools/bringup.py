@@ -1214,6 +1214,32 @@ def t_motors(a):
         fc.start_rc_stream()
         rec.event("stream_start", limits=str(fc.limits))
 
+        if getattr(a, "self_arm", False):
+            if not ch.companion_arm:
+                print(BAD, "--self-arm needs channels.companion_arm in the config")
+                return 1
+            if not (ch.override_mask & (1 << ch.arm_index)):
+                print(BAD, f"--self-arm needs ch{ch.arm_index+1} in "
+                           f"msp_override_channels_mask (got {ch.override_mask}); "
+                           f"the FC would ignore what we stream on it")
+                return 1
+            print(f"\n>>> SELF-ARMING in 3s — ch{ch.override_index+1} DOWN aborts")
+            for n in (3, 2, 1):
+                print(f"    {n} ...", flush=True)
+                time.sleep(1.0)
+            fc.arm(True)
+            rec.event("companion_arm_requested")
+            t0 = time.monotonic()
+            while not fc.armed() and time.monotonic() - t0 < 5.0:
+                if fc.abort_reason:
+                    print(BAD, f"aborted while arming: {fc.abort_reason}")
+                    return 1
+                time.sleep(0.1)
+            if not fc.armed():
+                print(BAD, "the FC did not arm — check armingDisableFlags "
+                           "(throttle high, angle, boot grace, RX loss...)")
+                fc.arm(False)
+                return 1
         print(f"\n>>> ARM now with ch{ch.arm_index+1} (throttle is at minimum). "
               f"waiting up to {a.seconds:.0f}s ...")
         t0 = time.monotonic()
@@ -1281,6 +1307,16 @@ def t_motors(a):
         return 0
     finally:
         try:
+            # Disarm BEFORE idling and stopping. If we armed it, we put it back
+            # — leaving that to the operator would mean the aircraft stays armed
+            # on a stale override value with nothing streaming.
+            try:
+                if getattr(a, "self_arm", False):
+                    fc.arm(False)
+                    time.sleep(0.4)
+                    print(f"companion disarm sent; armed now {fc.armed()}")
+            except Exception as e:
+                print(WARN, f"disarm on exit failed: {e}")
             fc.set_stick(**IDLE_STICKS)
             time.sleep(0.3)
             fc.stop_rc_stream("motor test done")
@@ -1426,6 +1462,10 @@ def main():
     p.add_argument("--fake", action="store_true")
     p.add_argument("--fake-imu", action="store_true")
     p.add_argument("--fake-vision", action="store_true")
+    p.add_argument("--self-arm", action="store_true",
+                   help="motors: arm from the companion instead of waiting for "
+                        "the pilot. Needs channels.companion_arm AND the ARM "
+                        "channel in msp_override_channels_mask.")
     p.add_argument("--no-fc", action="store_true")
     p.add_argument("--tracker-url", default=None,
                    help="tracker HTTP telemetry endpoint for the vision test")
