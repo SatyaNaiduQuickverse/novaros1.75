@@ -1166,6 +1166,20 @@ def t_motors(a):
                         "command attitude only." % ch.override_mask)
             print("       You must hold a small throttle for the motors to turn,"
                   " and chopping it stops them regardless of anything here.")
+        # WAIT for ACRO rather than failing on it. Checking once, reporting,
+        # and asking the operator to flip a switch before a separate run leaves
+        # a gap in which the switch can move back — which is exactly what
+        # happened twice. Gate and run in one process, no gap.
+        if not fc.is_acro():
+            print(f"waiting up to {a.seconds:.0f}s for ACRO — move the ch"
+                  f"{ch.angle_index+1} switch OUT of 900-1300 and LEAVE it there")
+            t_acro = time.monotonic()
+            while not fc.is_acro():
+                if time.monotonic() - t_acro > a.seconds:
+                    break
+                print("   ch%d = %d   modes %s" % (ch.angle_index + 1,
+                      fc.rc()[ch.angle_index], sorted(fc.active_boxes())), flush=True)
+                time.sleep(1.5)
         boxes = fc.active_boxes()
         if not fc.is_acro():
             lvl = ", ".join(sorted({"ANGLE", "HORIZON"} & boxes))

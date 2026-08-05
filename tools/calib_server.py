@@ -197,6 +197,15 @@ class Session:
         self.fc_grav = None
         self.fc_spec = None
         self.fc_at = 0.0
+        # Switch/mode state, polled slower than attitude. This exists because
+        # the operator cannot see the terminal — every "waiting for ACRO" line
+        # printed by a CLI harness lands only in the assistant's output, so
+        # finding which physical switch drives which channel was impossible
+        # from the page. Now it is not.
+        self.fc_rc = None
+        self.fc_modes = None
+        self.fc_armed = None
+        self.fc_bindings = None
         self.marks = {}             # operator-labelled ground truth, see /api/mark
         self.probe = None           # SelfLevelProbe, when step 3 is watching
         self.probe_error = None
@@ -220,12 +229,29 @@ class Session:
         return self.fc
 
     def _fc_poll(self):
-        """20 Hz attitude, still well inside the ~62 txn/s budget. Never raises.
+        """20 Hz attitude + 5 Hz switches. Never raises.
 
-        Was 10 Hz, which put up to 100 ms of staleness into every comparison —
-        enough to fabricate 15+ deg of disagreement during a brisk tilt.
+        Attitude was 10 Hz, which put up to 100 ms of staleness into every
+        comparison — enough to fabricate 15+ deg of disagreement during a brisk
+        tilt. The switch reads are every 4th cycle: 20 + 5 + 5 = 30 of the ~62
+        transactions this board can service, so the attitude rate is unaffected.
         """
+        n = 0
+        try:
+            self.fc_bindings = self.fc.mode_ranges()
+        except Exception:
+            self.fc_bindings = []
         while not self._stop.is_set():
+            n += 1
+            if n % 4 == 0:
+                try:
+                    rc = self.fc.rc()
+                    boxes = sorted(self.fc.active_boxes())
+                    armed = self.fc.armed()
+                    with self.lock:
+                        self.fc_rc, self.fc_modes, self.fc_armed = rc, boxes, armed
+                except Exception:
+                    pass
             try:
                 att = self.fc.attitude()
                 grav = _gravity_in_body_from_fc(att)          # down, for pose naming
@@ -313,6 +339,7 @@ class Session:
             "axis_verified": bool(self.cfg.imu32.verified),
             "config_path": self.cfg.source,
             "marks": [self.marks[k] for k in self.POSE_SPEC if k in self.marks],
+            "switches": self._switches(),
             "poses_todo": [{"key": k, "label": self.POSE_LABEL[k]}
                            for k in self.POSE_SPEC],
         }
@@ -375,6 +402,37 @@ class Session:
         # during the countdown and rename themselves the moment recording
         # starts, which reads as a glitch.
         return BODY_TARGETS if self.fc_grav is not None else SENSOR_TARGETS
+
+    def _switches(self) -> dict:
+        """Everything needed to answer "which switch is that?" from the page."""
+        with self.lock:
+            rc, modes, armed = self.fc_rc, self.fc_modes, self.fc_armed
+            bindings = self.fc_bindings
+        if rc is None:
+            return {}
+        ch = self.cfg.channels
+        rows = []
+        for mr in sorted(bindings or [], key=lambda x: x["channel"]):
+            i = mr["index"]
+            now = rc[i] if len(rc) > i else None
+            rows.append({
+                "name": mr["name"], "channel": mr["channel"],
+                "lo": mr["lo"], "hi": mr["hi"], "now": now,
+                "active": bool(now is not None and mr["lo"] <= now <= mr["hi"]),
+            })
+        # Every aux channel, bound or not — an unbound switch still has to be
+        # findable, which is the whole point.
+        aux = [{"channel": i + 1, "value": v} for i, v in enumerate(rc)
+               if i >= 4 and len(rc) > i]
+        return {
+            "bindings": rows, "aux": aux, "modes": modes or [],
+            "armed": bool(armed),
+            "override": bool(len(rc) > ch.override_index
+                             and rc[ch.override_index] >= ch.override_active_us),
+            "acro": not any(m in (modes or []) for m in ("ANGLE", "HORIZON")),
+            "sticks": rc[:4] if len(rc) >= 4 else [],
+            "mask": ch.override_mask,
+        }
 
     def _covered(self) -> list:
         """How many samples landed in each named direction's cap.

@@ -113,6 +113,34 @@
     </div>
   </div>
 
+  <!-- --------------------------------------------------------- switches -->
+  <div class="panel" id="switches" hidden>
+    <div class="lbl" style="margin-bottom:10px">Switches &amp; modes
+      <span class="note">&mdash; flip one at a time and watch which row moves</span></div>
+    <div class="row" style="margin-bottom:12px">
+      <div class="col" style="flex:0 0 auto"><div class="lbl">MSP override</div>
+        <div id="swOvr" class="big" style="font-size:1.3rem">&mdash;</div></div>
+      <div class="col" style="flex:0 0 auto"><div class="lbl">Armed</div>
+        <div id="swArm" class="big" style="font-size:1.3rem">&mdash;</div></div>
+      <div class="col" style="flex:0 0 auto"><div class="lbl">Flight mode</div>
+        <div id="swAcro" class="big" style="font-size:1.3rem">&mdash;</div></div>
+      <div class="col"><div class="lbl">Active modes</div>
+        <div id="swModes" style="font-weight:600">&mdash;</div></div>
+    </div>
+    <div class="row" style="align-items:flex-start">
+      <div class="col">
+        <div class="lbl" style="margin-bottom:6px">Bound to a mode</div>
+        <table id="swBound"></table>
+      </div>
+      <div class="col">
+        <div class="lbl" style="margin-bottom:6px">All aux channels</div>
+        <table id="swAux"></table>
+        <p class="note" style="margin:8px 0 0">A row flashes when it changes, so
+          an unbound switch is still findable.</p>
+      </div>
+    </div>
+  </div>
+
   <!-- ------------------------------------------------------------ model -->
   <div class="panel" id="model" hidden>
     <div class="lbl" style="margin-bottom:10px">Attitude, drawn
@@ -304,7 +332,7 @@ $("#bConnect").onclick = async () => {
   b.disabled = false;
   if (!r.ok) { $("#connMsg").textContent = " " + (r.error || "failed"); return; }
   $("#connMsg").textContent = " connected";
-  for (const id of ["#live","#model","#signs","#progress","#step1","#step2","#step3"])
+  for (const id of ["#live","#switches","#model","#signs","#progress","#step1","#step2","#step3"])
     $(id).hidden = false;
   modelOn = true;
 };
@@ -336,6 +364,36 @@ function buildPoseButtons(list) {
       b.textContent = t; b.disabled = false;
     };
   });
+}
+
+const lastAux = {};
+function renderSwitches(sw) {
+  if (!sw || !sw.bindings) return;
+  const pill = (on, yes, no) =>
+    `<span class="pill ${on ? 'ok' : 'bad'}">${on ? yes : no}</span>`;
+  $("#swOvr").innerHTML = pill(sw.override, "ON", "OFF");
+  $("#swArm").innerHTML = sw.armed
+    ? '<span class="pill bad">ARMED</span>' : '<span class="pill ok">disarmed</span>';
+  $("#swAcro").innerHTML = pill(sw.acro, "ACRO", "LEVELLING");
+  $("#swModes").textContent = sw.modes.length ? sw.modes.join(", ") : "none";
+
+  $("#swBound").innerHTML =
+    `<tr class="note"><td style="text-align:left">mode</td><td>ch</td>
+       <td>active band</td><td>now</td></tr>` +
+    sw.bindings.map(b => `<tr>
+       <td style="text-align:left;color:${b.active ? 'var(--ok)' : 'var(--dim)'}">
+         <b>${b.name}</b></td>
+       <td>${b.channel}</td><td class="note">${b.lo}-${b.hi}</td>
+       <td style="color:${b.active ? 'var(--ok)' : 'var(--ink)'}">${b.now}${
+         b.active ? " ✓" : ""}</td></tr>`).join("");
+
+  $("#swAux").innerHTML = sw.aux.map(a => {
+    const moved = lastAux[a.channel] !== undefined
+                  && Math.abs(lastAux[a.channel] - a.value) > 100;
+    lastAux[a.channel] = a.value;
+    return `<tr${moved ? ' style="background:color-mix(in srgb,var(--acc) 25%,transparent)"' : ''}>
+      <td style="text-align:left">ch${a.channel}</td><td>${a.value}</td></tr>`;
+  }).join("");
 }
 
 function renderMarks(marks) {
@@ -627,6 +685,7 @@ async function tick() {
     $("#mFc").textContent = `roll ${s.fc.roll.toFixed(1)}°   pitch ${s.fc.pitch.toFixed(1)}°`;
   }
 
+  renderSwitches(s.switches);
   buildPoseButtons(s.poses_todo);
   renderMarks(s.marks);
 
