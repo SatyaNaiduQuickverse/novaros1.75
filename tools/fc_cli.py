@@ -90,6 +90,54 @@ def cli_session(port, baud, lines, settle=0.45):
     return out
 
 
+DUMP_PATH = "config/fc_diff_all.txt"
+
+
+def _dump(a):
+    """Save the FC's entire configuration to the repo.
+
+    Everything that makes this airframe work lives in the flight controller's
+    EEPROM and NOWHERE ELSE: the override mask, the aux bindings that give ch5
+    / ch8 / ch9 any meaning, PIDs, rates, motor order, the accelerometer
+    calibration. The repo reproduces the software exactly and could not
+    reproduce any of that. Reset the board or swap it and it is simply gone.
+
+    `diff all` is Betaflight's own restore format — paste it back into the CLI
+    and the board returns to this state. Committing it makes the FC's
+    configuration version-controlled alongside the code that assumes it.
+    """
+    cfg = load()
+    out = a.name or DUMP_PATH
+    print(f"reading `diff all` from the FC (this takes a few seconds) ...")
+    txt = cli_session(resolve_port(cfg.fc.port), cfg.fc.baud,
+                      ["diff all", "exit"], settle=6.0)
+    # Keep from the command echo to the end of the dump, dropping the CLI
+    # banner and our own prompts.
+    start = txt.find("# diff all")
+    if start < 0:
+        start = txt.find("diff all")
+    body = txt[start:] if start >= 0 else txt
+    body = body.replace("\r\n", "\n")
+    lines = [ln for ln in body.splitlines() if not ln.strip().startswith("#$")]
+    if len(lines) < 20:
+        print(BAD, f"only {len(lines)} lines came back — the dump looks truncated")
+        print(txt[-400:])
+        return 1
+    pathlib.Path(out).write_text("\n".join(lines).rstrip() + "\n")
+    n_set = sum(1 for ln in lines if ln.strip().startswith("set "))
+    n_aux = sum(1 for ln in lines if ln.strip().startswith("aux "))
+    print(f"\n  wrote {out}")
+    print(f"  {len(lines)} lines, {n_set} `set` values, {n_aux} aux bindings")
+    for ln in lines:
+        t = ln.strip()
+        if t.startswith("aux ") or "msp_override_channels_mask" in t:
+            print("   ", t)
+    print("\n  Restore by pasting the file into Betaflight Configurator's CLI,")
+    print("  then `save`. Commit it so the FC's config is versioned with the")
+    print("  code that assumes it.")
+    return 0
+
+
 def _readback_mask(cfg):
     """What the FC says the mask is, right now. Source of truth."""
     port = resolve_port(cfg.fc.port)
@@ -149,10 +197,12 @@ def _set_mask(a):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("action", choices=["get", "set", "set-mask"])
+    ap.add_argument("action", choices=["get", "set", "set-mask", "dump"])
     ap.add_argument("name", nargs="?")
     ap.add_argument("value", nargs="?")
     a = ap.parse_args()
+    if a.action == "dump":
+        return _dump(a)
     if a.action == "set-mask":
         # One value, one truth. The mask lives on the FC AND in vehicle.yaml,
         # and a mismatch is not cosmetic: the wire watchdog uses the config
