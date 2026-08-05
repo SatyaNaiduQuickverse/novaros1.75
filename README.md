@@ -40,7 +40,15 @@ make loop-fake     # the whole loop with fake IMU, fake vision, no FC
 make preflight     # with the FC plugged in: who is on the port
 ```
 
-Then work through [docs/SETUP_HARDWARE.md](docs/SETUP_HARDWARE.md) in order.
+**Building a unit?** [docs/COMMISSIONING.md](docs/COMMISSIONING.md) is the
+ordered runbook — FC, then bridge, then calibrate, then verify, then the armed
+bench test, with the gates that stop a unit that passes every check and still
+flies wrong. It also states plainly what transfers between units and what must
+be re-measured for each one, which is the difference between a 40-minute build
+and an aircraft calibrated for a different airframe.
+
+Then work through [docs/SETUP_HARDWARE.md](docs/SETUP_HARDWARE.md) for the
+detail behind any step.
 
 Signs — attitude, correction direction, channel values — are measured on this
 airframe, never assumed. [docs/SIGN_CONVENTIONS.md](docs/SIGN_CONVENTIONS.md)

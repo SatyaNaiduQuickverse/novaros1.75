@@ -116,6 +116,14 @@ no timeout and an omitted channel leaves the previous HIGH in force forever.
   fits through any patch of its own surface and will return a confident, wrong
   centre. These calibrations decide which way is down.
 
+## Building another unit
+
+`docs/COMMISSIONING.md` is the ordered runbook. The key fact for a fleet: the
+code, the FC config dump and the compiled module all transfer, but **every
+calibration is per-unit** — gyro bias and accel offsets are per die, the mount
+matrix is per physical mounting, and the MSP ceiling is per board. Give each
+unit its own `config/units/<id>.yaml` rather than editing a shared file.
+
 ## Commands
 
 ```bash
