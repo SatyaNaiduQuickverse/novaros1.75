@@ -97,6 +97,19 @@ channels:
   # 989..2012, found by sweeping all 16 channels rather than trusting the map.
   roll_right_us: 2012
   nose_down_us: 2012
+  # ✅ CONFIRMED ON REAL MOTORS 2026-08-05, armed, props off, ACRO, mask 15
+  # (`bringup motors`). Betaflight quad-X numbering: M1 rear-right, M2
+  # front-right, M3 rear-left, M4 front-left. Motors that spun UP:
+  #   ROLL RIGHT 1550 -> M3,M4  left pair   -> left lifts, rolls RIGHT
+  #   ROLL LEFT  1450 -> M1,M2  right pair  -> right lifts, rolls LEFT
+  #   PITCH FWD  1550 -> M1,M3  rear pair   -> rear lifts, nose DOWN
+  #   PITCH BACK 1450 -> M2,M4  front pair  -> front lifts, nose UP
+  #   YAW RIGHT  1550 -> M2,M3  one diagonal
+  #   YAW LEFT   1450 -> M1,M4  other diagonal
+  # 🔑 PITCH is the important one: it independently confirms nose_down_us above.
+  # That value came from the pilot's STICK; this came from the MOTORS. Two
+  # unrelated methods agree that pitch ABOVE 1500 is nose down — on the axis
+  # that was wrong more often than any other during bring-up.
 
 limits:
   # bench | tethered | flight. Keep "bench" until the whole loop is verified.

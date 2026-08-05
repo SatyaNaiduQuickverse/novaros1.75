@@ -1125,12 +1125,24 @@ MOTOR_MOVES = [
     ("armed idle",      3.0, dict(roll=1500, pitch=1500, yaw=1500, throttle=1000)),
     ("throttle ramp",   5.0, None),                      # handled specially
     ("hold at cap",     2.0, dict(roll=1500, pitch=1500, yaw=1500, throttle=1100)),
-    ("ROLL RIGHT",      2.5, dict(roll=1600, pitch=1500, yaw=1500, throttle=1060)),
-    ("ROLL LEFT",       2.5, dict(roll=1400, pitch=1500, yaw=1500, throttle=1060)),
-    ("PITCH FORWARD",   2.5, dict(roll=1500, pitch=1600, yaw=1500, throttle=1060)),
-    ("PITCH BACK",      2.5, dict(roll=1500, pitch=1400, yaw=1500, throttle=1060)),
-    ("YAW RIGHT",       2.5, dict(roll=1500, pitch=1500, yaw=1600, throttle=1060)),
-    ("YAW LEFT",        2.5, dict(roll=1500, pitch=1500, yaw=1400, throttle=1060)),
+    # 1.0 s and +-60, not 2.5 s and +-100. MEASURED: a 2.5 s hold at +-100 sent
+    # two motors to 1780 and tripped the 1700 abort. That is not a fault — in
+    # ACRO the sticks command a RATE, the restrained airframe cannot deliver it,
+    # so the rate error integrates and the I-term winds the motors apart until
+    # they saturate. The signal is the INITIAL differential; everything after it
+    # is wind-up. Short holds keep the answer and lose the saturation.
+    ("ROLL RIGHT",      1.0, dict(roll=1550, pitch=1500, yaw=1500, throttle=1060)),
+    ("settle",          1.2, dict(**IDLE_STICKS)),
+    ("ROLL LEFT",       1.0, dict(roll=1450, pitch=1500, yaw=1500, throttle=1060)),
+    ("settle",          1.2, dict(**IDLE_STICKS)),
+    ("PITCH FORWARD",   1.0, dict(roll=1500, pitch=1550, yaw=1500, throttle=1060)),
+    ("settle",          1.2, dict(**IDLE_STICKS)),
+    ("PITCH BACK",      1.0, dict(roll=1500, pitch=1450, yaw=1500, throttle=1060)),
+    ("settle",          1.2, dict(**IDLE_STICKS)),
+    ("YAW RIGHT",       1.0, dict(roll=1500, pitch=1500, yaw=1550, throttle=1060)),
+    ("settle",          1.2, dict(**IDLE_STICKS)),
+    ("YAW LEFT",        1.0, dict(roll=1500, pitch=1500, yaw=1450, throttle=1060)),
+    ("settle",          1.5, dict(**IDLE_STICKS)),
     ("back to idle",    2.0, dict(**IDLE_STICKS)),
 ]
 
@@ -1230,7 +1242,25 @@ def t_motors(a):
             print(f"  > {name}")
             rec.event("move", move=name)
             t1 = time.monotonic()
+            peak = None
+            # Stop pushing the moment the answer is in hand. On a restrained
+            # airframe in ACRO the rate error integrates without limit, so a
+            # held stick always ends in saturation — measured twice, reaching
+            # 1780 and then 1746 against a 1700 abort. The differential IS the
+            # measurement; everything after it is wind-up, and continuing to
+            # command it only trips the safety limit and loses the remaining
+            # axes. So each phase ends early once the motors have visibly split.
+            SOFT_STOP = 1400
             while (el := time.monotonic() - t1) < dur:
+                if el > 0.30:
+                    mo_now = fc.motors()
+                    if peak is None:
+                        peak = mo_now
+                    if max(mo_now) > SOFT_STOP:
+                        peak = mo_now
+                        rec.event("soft_stop", move=name, motors=mo_now)
+                        print(f"      (measured, easing off at {max(mo_now)})")
+                        break
                 if name == "throttle ramp":
                     thr = 1000 + (fc.limits.thr_cap - 1000) * (el / dur)
                     fc.set_stick(roll=1500, pitch=1500, yaw=1500, throttle=thr)
@@ -1240,8 +1270,9 @@ def t_motors(a):
                     break
                 time.sleep(0.05)
             mo = fc.motors()
-            rec.event("move_end", move=name, motors=mo, rc=fc.rc()[:4])
-            print(f"      motors {mo}   rc {fc.rc()[:4]}")
+            rec.event("move_end", move=name, motors=mo, early=peak, rc=fc.rc()[:4])
+            print(f"      motors {peak or mo}   rc {fc.rc()[:4]}"
+                  + (f"   (end {mo})" if peak and peak != mo else ""))
 
         if fc.abort_reason:
             print(BAD, f"ABORTED: {fc.abort_reason}")
