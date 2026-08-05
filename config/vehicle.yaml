@@ -9,6 +9,16 @@
 #   set msp_override_channels_mask = 15     # binary 1111 = channels 1-4
 #   aux <slot> 50 3 1700 2100 0 0           # box id 50 = MSP OVERRIDE on ch8
 
+unit:
+  # Which physical airframe this config describes. Every calibration
+  # below is per-unit, so the connectors refuse to run against other
+  # hardware rather than fly a stranger's idea of which way is down.
+  # Written by tools/bind_unit.py — re-run it after any board swap.
+  id: NOVA-001
+  fc_mcu_id: 0022004c3235511137383433
+  esp32_mac: 8C:FD:49:11:35:50
+  enforce: true
+
 fc:
   # BOARD CHANGED 2026-08-04 — the new FC has not been identified yet, so this
   # is back to "auto": resolve the single Betaflight board under
@@ -21,7 +31,11 @@ fc:
   # had 366D335B3333 / 3678336D3333) — a second F405 would enumerate to the
   # same path, so find_fc.py is the way to confirm which board answered.
   # An ESP32 on this Pi holds ttyACM0, so the FC is on ttyACM1: by-id only.
-  port: /dev/serial/by-id/usb-Betaflight_Betaflight_STM32F405_0x8000000-if00
+  # "auto" so a fresh deployment resolves whatever Betaflight board is present.
+  # resolve_port() still refuses to guess when more than one is plugged in,
+  # which is the protection that mattered, and unit.fc_mcu_id now confirms it
+  # is the RIGHT board rather than merely a board.
+  port: auto
   baud: 115200
   timeout_s: 1.0
   # MEASURED 2026-08-04 on THIS board (F405 / BTFL 4.5.1): every MSP

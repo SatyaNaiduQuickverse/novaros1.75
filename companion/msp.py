@@ -37,6 +37,7 @@ MSP_MODE_RANGES = 34
 MSP_BOXNAMES = 116
 MSP_BOXIDS = 119
 MSP_SET_RAW_RC = 200
+MSP_UID = 160
 MSP_EEPROM_WRITE = 250
 
 # MSP v2. Needed only for the settings API — Betaflight exposes every CLI
@@ -186,6 +187,17 @@ class MSP:
         self.timeouts += 1
         raise MSPTimeout(f"no reply for v2 fn 0x{function:04X} within "
                          f"{self.timeout:.2f}s")
+
+    def uid(self) -> str:
+        """The MCU's unique id, as the CLI's `mcu_id` prints it.
+
+        Note the byte order: MSP sends three little-endian u32s, and the CLI
+        renders the same 12 bytes big-endian per word. Matching the CLI matters
+        because that is what `diff all` records and what a human compares.
+        """
+        import struct
+        a, b, c = struct.unpack("<3I", self.request(MSP_UID)[:12])
+        return "%08x%08x%08x" % (a, b, c)
 
     def get_setting(self, name: str) -> bytes:
         """Raw bytes of a Betaflight CLI setting, by name.

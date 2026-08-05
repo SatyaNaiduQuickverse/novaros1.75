@@ -169,7 +169,11 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(len(cfg.imu.board_to_frd), 3)
 
     def test_unverified_calibrations_are_reported(self):
-        self.assertEqual(len(load("/nonexistent.yaml").unverified()), 2)
+        # imu, camera, and unit identity — a default config is bound to no
+        # hardware, so it cannot know whose calibration it is carrying.
+        pending = load("/nonexistent.yaml").unverified()
+        self.assertEqual(len(pending), 3)
+        self.assertTrue(any("unit identity" in p for p in pending))
 
 
 if __name__ == "__main__":
@@ -212,3 +216,63 @@ class TestBenchRecorderKwargs(unittest.TestCase):
                 rec.event("move", name="ROLL RIGHT")
         finally:
             rec.close()
+
+
+class TestUnitIdentity(unittest.TestCase):
+    """A config must know which airframe it was measured on.
+
+    Every calibration is per-unit: gyro bias and accel offsets belong to a
+    specific die, the mount matrix to a specific mounting. Deploy one unit's
+    config to another and it inherits someone else's idea of which way is down
+    — and nothing downstream can tell, because the numbers are all plausible,
+    the tests pass, and preflight is green. Binding turns that silent failure
+    into a refusal at connect, which is the only place it can still be caught.
+    """
+
+    def test_an_unbound_config_says_so(self):
+        pending = load("/nonexistent.yaml").unverified()
+        self.assertTrue(any("unit identity" in p for p in pending))
+
+    def test_the_repo_config_is_bound(self):
+        repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        cfg = load(os.path.join(repo, "config", "vehicle.yaml"))
+        self.assertTrue(cfg.unit.id, "commissioned units must be bound")
+        self.assertRegex(cfg.unit.fc_mcu_id, r"^[0-9a-f]{24}$")
+        self.assertRegex(cfg.unit.esp32_mac,
+                         r"^[0-9A-F]{2}(:[0-9A-F]{2}){5}$")
+        self.assertNotIn("unit identity",
+                         " ".join(cfg.unit_pending() if hasattr(cfg, "unit_pending")
+                                  else cfg.unverified()))
+
+    def test_a_wrong_fc_is_refused_not_warned(self):
+        from companion.fc_link import FCLink
+        from companion.msp import MSPError
+        cfg = load()
+        cfg.unit.fc_mcu_id = "ffffffffffffffffffffffff"
+        cfg.unit.enforce = True
+        fc = FCLink.__new__(FCLink)
+        FCLink.__init__(fc, cfg)
+        fc.msp = type("M", (), {"uid": staticmethod(lambda: "0022004c3235511137383433")})()
+        with self.assertRaises(MSPError) as cm:
+            fc._check_unit_identity()
+        self.assertIn("WRONG AIRFRAME", str(cm.exception))
+
+    def test_enforce_false_downgrades_to_a_loud_log(self):
+        """An escape hatch, but never the default — the default must refuse."""
+        from companion.fc_link import FCLink
+        cfg = load()
+        cfg.unit.fc_mcu_id = "ffffffffffffffffffffffff"
+        cfg.unit.enforce = False
+        fc = FCLink.__new__(FCLink)
+        FCLink.__init__(fc, cfg)
+        fc.msp = type("M", (), {"uid": staticmethod(lambda: "deadbeef")})()
+        fc._check_unit_identity()          # must not raise
+        from companion.config import UnitConfig
+        self.assertTrue(UnitConfig().enforce, "enforce must default ON")
+
+    def test_esp32_mac_comes_out_of_the_by_id_path(self):
+        from companion.imu_esp32 import ESP32IMU
+        path = ("/dev/serial/by-id/"
+                "usb-Espressif_USB_JTAG_serial_debug_unit_8C:FD:49:11:35:50-if00")
+        self.assertEqual(ESP32IMU.mac_from_port(path), "8C:FD:49:11:35:50")
+        self.assertEqual(ESP32IMU.mac_from_port("/dev/ttyACM0"), "")

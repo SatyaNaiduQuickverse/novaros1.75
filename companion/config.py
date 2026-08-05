@@ -227,7 +227,33 @@ class GuidanceConfig:
 
 
 @dataclass
+class UnitConfig:
+    """Which physical airframe this config describes.
+
+    Every calibration below is per-unit — gyro bias and accel offsets belong to
+    a specific die, the mount matrix to a specific mounting. Deploying one
+    unit's config to another gives it someone else's idea of which way is down,
+    and nothing downstream can tell: the numbers are all plausible, every
+    automated check passes, and the aircraft flies wrong.
+
+    So the config records WHICH hardware it was measured on, and the connectors
+    refuse to run against anything else. Blank fields mean "not yet bound" —
+    that warns rather than refuses, so a fresh unit can be brought up.
+
+    Stamp a unit with:  python3 tools/bind_unit.py --id NOVA-002
+    """
+
+    id: str = ""                 # human label, e.g. NOVA-001
+    fc_mcu_id: str = ""          # STM32 unique id, from MSP_UID
+    esp32_mac: str = ""          # from the /dev/serial/by-id path
+    # Refuse rather than warn on a mismatch. Default ON: a wrong calibration is
+    # not a thing to carry on past.
+    enforce: bool = True
+
+
+@dataclass
 class Config:
+    unit: UnitConfig = field(default_factory=UnitConfig)
     fc: FCConfig = field(default_factory=FCConfig)
     channels: ChannelConfig = field(default_factory=ChannelConfig)
     imu: IMUCal = field(default_factory=IMUCal)
@@ -245,6 +271,11 @@ class Config:
     def unverified(self) -> list[str]:
         """Calibrations still on their factory guess. Bring-up must clear these."""
         pending = []
+        if not self.unit.id or not self.unit.fc_mcu_id or not self.unit.esp32_mac:
+            pending.append("unit identity — this config is not bound to any "
+                           "hardware, so nothing can tell whether its "
+                           "calibration belongs to the connected airframe. "
+                           "Run: python3 tools/bind_unit.py --id <name>")
         if not self.imu.verified:
             pending.append("imu (acc scale / axis map) — run: bringup calib-imu")
         if not self.camera.verified:

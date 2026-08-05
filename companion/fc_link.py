@@ -168,6 +168,7 @@ class FCLink:
         self.arm_bit = ids.index(BOX_ARM_PERMANENT_ID)
         self._install_failsafe_hooks()
         log.info("connected: %s", self.msp.identify())
+        self._check_unit_identity()
         return self
 
     def _install_failsafe_hooks(self) -> None:
@@ -211,6 +212,39 @@ class FCLink:
             # a worker still gets atexit coverage.
             log.debug("SIGTERM hook skipped (not main thread)")
         self._hooks_installed = True
+
+    def _check_unit_identity(self) -> None:
+        """Is this config describing the board we just connected to?
+
+        Every calibration in it is per-unit. Deploying one airframe's config to
+        another hands it someone else's idea of which way is down — and nothing
+        downstream can tell, because the numbers are all plausible and every
+        automated check passes. So compare the FC's unique id against what the
+        config was measured on, and refuse rather than fly a stranger's
+        calibration.
+        """
+        want = (self.cfg.unit.fc_mcu_id or "").strip().lower()
+        if not want:
+            log.warning("this config is not bound to any hardware — nothing can "
+                        "tell whether its calibration belongs to this airframe. "
+                        "Run: python3 tools/bind_unit.py --id <name>")
+            return
+        try:
+            got = self.msp.uid()
+        except Exception as e:
+            log.warning("could not read the FC's unique id (%s) — identity "
+                        "unchecked", e)
+            return
+        if got.lower() == want:
+            log.info("unit %s confirmed (fc %s)", self.cfg.unit.id or "?", got)
+            return
+        msg = (f"WRONG AIRFRAME: {self.cfg.source} was measured on FC {want}, "
+               f"but this board is {got}. Its calibration — gyro bias, accel "
+               f"offsets, mount matrix — belongs to a different unit.")
+        if self.cfg.unit.enforce:
+            raise MSPError(msg + " Set unit.enforce false to override, or bind "
+                                 "this unit with tools/bind_unit.py.")
+        log.error(msg)
 
     def _failsafe_idle(self) -> None:
         """Best-effort final idle frame. Safe to call repeatedly."""

@@ -124,6 +124,12 @@ calibration is per-unit** — gyro bias and accel offsets are per die, the mount
 matrix is per physical mounting, and the MSP ceiling is per board. Give each
 unit its own `config/units/<id>.yaml` rather than editing a shared file.
 
+**Every config is bound to its hardware.** `unit.fc_mcu_id` and
+`unit.esp32_mac` are checked at connect and a mismatch RAISES. That exists
+because deploying one unit's config to another is otherwise silent — plausible
+numbers, passing tests, green preflight, wrong aircraft. Stamp a unit with
+`tools/bind_unit.py --id <name>` as the last step of commissioning.
+
 ## Commands
 
 ```bash

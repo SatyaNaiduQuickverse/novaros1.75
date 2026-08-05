@@ -279,6 +279,13 @@ class ESP32IMU:
 
     # ------------------------------------------------------------ lifecycle
 
+    @staticmethod
+    def mac_from_port(port: str) -> str:
+        """The ESP32's MAC, straight out of its by-id path. Identity for free."""
+        import re
+        m = re.search(r"([0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5})", port or "")
+        return m.group(1).upper() if m else ""
+
     def start(self, reset: bool = True) -> "ESP32IMU":
         """Open the port, reboot the bridge into it, and start reading.
 
@@ -290,6 +297,16 @@ class ESP32IMU:
         already known to be streaming.
         """
         self.port = self.port or find_esp32_port()
+        want = (getattr(self.cal, "esp32_mac", "") or "").upper() if self.cal else ""
+        got = self.mac_from_port(self.port)
+        if want and got and want != got:
+            # Same reasoning as the FC check: the accel offsets and the mount
+            # matrix belong to THIS die on THIS mounting, and a different board
+            # produces plausible, wrong attitude with nothing to flag it.
+            raise RuntimeError(
+                f"WRONG ESP32: this config was calibrated on {want}, but the "
+                f"connected bridge is {got}. Its accel offsets and mount "
+                f"matrix belong to a different unit.")
         self._open()
         if reset:
             pulse_reset(self._ser)

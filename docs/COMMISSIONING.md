@@ -194,7 +194,34 @@ so a held stick always saturates eventually. That is physics, not a fault.
 
 ---
 
-## Phase 7 — record the unit
+## Phase 7 — bind the unit to its hardware
+
+```bash
+python3 tools/bind_unit.py --id NOVA-002
+```
+
+- [ ] Records the FC's `mcu_id` and the ESP32's MAC into this unit's config
+- [ ] Commit it
+
+**Do not skip this.** Everything above measured values that belong to *these
+two boards*. Without the binding, deploying this config to another airframe
+gives it this one's gyro bias, accel offsets and mount matrix — and nothing
+downstream can tell. The numbers stay plausible, `make test` passes, preflight
+is green, and the aircraft flies wrong.
+
+With it, `FCLink.connect()` reads the FC's unique id and **refuses** on a
+mismatch:
+
+```
+WRONG AIRFRAME: config/units/NOVA-002.yaml was measured on FC 0022004c...,
+but this board is 0041006b.... Its calibration — gyro bias, accel offsets,
+mount matrix — belongs to a different unit.
+```
+
+The ESP32 is checked the same way from the MAC in its by-id path. Check any
+unit at any time with `python3 tools/bind_unit.py --show`.
+
+## Phase 8 — record the unit
 
 Per unit, keep alongside the config:
 
@@ -212,6 +239,7 @@ tracking worst          ______ deg
 armed bench test        PASS / FAIL           date ________
 motor order verified    PASS / FAIL
 commissioned by         ____________________
+bound (bind_unit.py)    YES / NO
 ```
 
 Phases 3-6 in the UI take about 8 minutes of hands-on time once practised.
