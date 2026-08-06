@@ -269,6 +269,45 @@ Phases 3-6 in the UI take about 8 minutes of hands-on time once practised.
 
 ---
 
+## What has actually been verified
+
+Every step below was exercised on the first unit (NOVA-001) on 2026-08-05
+unless marked otherwise. **The full sequence has never been run start-to-finish
+on a genuinely fresh unit** — each step was proven against an airframe that was
+already configured, which exercises different paths from a bare one.
+
+| step | status | evidence |
+|---|---|---|
+| 1 clone + deps | ✅ | clean clone from GitHub, 198 tests pass, `.so` digest matches |
+| 2 `provision.py` | ✅ | full pass, all checks green |
+| 3 FC restore in Configurator | ❌ **untested** | only the dump *readback* was verified, which is not the same thing |
+| 4 deploy `main.py` | ✅ | deployed to a live streaming board, came back at 200 Hz |
+| 4 full reflash (`esptool write-flash`) | ❌ **untested** | the code path has never executed |
+| 5 MSP ceiling | ✅ | measured 62 txn/s on this F405 |
+| 6 gyro bias | ✅ | measured and applied |
+| 7 accel / axis map / signs | ✅ | all gates passed, six poses on both sensors |
+| 8 stick directions | ✅ | 2012 both axes, 0 µs jitter |
+| 9 armed motor test | ✅ | full six-axis run, twice, two arming paths |
+| 10 motor order → corner | ❌ **never done** | invisible to MSP; needs Configurator's motor tab |
+| 11 bind + refuse | ✅ | bound; the mismatch path is unit-tested |
+
+**The 20-minute estimate is extrapolated**, not measured on a fresh build.
+
+### The two open items
+
+**Motor order (step 10)** is the one with real consequences. Everything the
+armed test proves happens *inside* the flight controller, so a mis-wired ESC
+looks perfect from every angle we can see. Until it is checked, "ROLL RIGHT
+lifts the left pair" means "lifts the pair the FC calls M3/M4", not "lifts the
+physically left pair".
+
+**The full ESP32 reflash (step 4)** matters only for a board that has never had
+MicroPython, or one that needs recovering. A redeploy of `main.py` alone is
+verified. Keep a copy of `ESP32_GENERIC_C6-<ver>.bin` alongside the repo so
+recovery never depends on having a network.
+
+---
+
 ## Per-unit configs
 
 `config/vehicle.yaml` currently describes one airframe. For a fleet, do **not**

@@ -118,14 +118,32 @@ Two traps, both hit for real, both now covered by tests:
   legitimately silent while it boots. Without the grace the reader calls that a
   wedge, resets it again, and loops forever — the recovery becomes the outage.
 
-### The firmware cannot be interrupted while streaming
+### Raw serial writes fail while streaming — but `mpremote` gets in
 
-Measured: once `stream()` is running, **every** host→device write times out. So
-Ctrl-C never lands, `mpremote` cannot connect, and `STARTUP_DELAY_S` buys
-nothing. The 200 Hz loop starves MicroPython's USB-Serial-JTAG RX task.
+Two measurements that disagree, both reproduced, and the honest position is to
+record both rather than pick one.
 
-The only ways in are the ROM download mode (esptool, which is independent of
-firmware) or a full erase and reflash.
+**Raw `pyserial` writes fail.** Once `stream()` is running, every host→device
+write times out, so Ctrl-C never lands and `STARTUP_DELAY_S` buys nothing. This
+is why `pulse_reset` treats its wake byte as optional and why every handle to
+this device needs `write_timeout`.
+
+**`mpremote` succeeds anyway.** 2026-08-05, board streaming continuously with
+nothing having reset it first:
+
+```
+deploying esp32/main.py ...
+  [ OK ] main.py deployed
+  [ OK ] ESP32 streaming — 314 frames, 0 drops, 0 recoveries
+```
+
+⚠️ **Mechanism unknown.** Most likely `mpremote` drives the USB-JTAG control
+lines or retries in a way a plain write does not, but that is a guess and is
+labelled as one. What is measured: `tools/provision.py --flash-esp32` deploys
+`main.py` to a live, streaming board and it comes back streaming.
+
+So a redeploy does not require a reflash. If it ever does time out, the ROM
+download mode (esptool, independent of firmware) is always available.
 
 `esp32/main.py` in this repo already contains the fixes for the next flash:
 
